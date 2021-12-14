@@ -1,13 +1,11 @@
 package bk.app.testapp
 
-import java.util.function.Consumer
-
 class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
 
     /**
-     * Скрытые элемеенты представлены как список записей с полями:
-     *  индекс первого элемента,
-     *  позиция первого элемента,
+     * Скрытые элементы представлены как список записей с полями:
+     *  плоский индекс первого элемента,
+     *  видимая позиция первого элемента,
      *  количество скрытых элементов до начала следующей записи
      *
      * Для получения позиции с учетом скрытых элементов по индексу элемента
@@ -24,15 +22,15 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         const val HIDDEN_ITEM = -1
     }
 
-    private val table = mutableListOf<Bucket>()
+    internal val table = mutableListOf<Bucket>()
 
-    private class Entry(
+    internal class Entry(
         var index: Int,
         var position: Int,
         var hidden: Int
     )
 
-    private class Bucket(
+    internal class Bucket(
         var index: Int,
         var position: Int,
         val entries: MutableList<Entry>
@@ -54,7 +52,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      */
     fun positionByIndex(index: Int): Int {
         checkIndex(index)
-        return getBucket(table) { it.index - index }?.let { bucket ->
+        return getBucket { it.index - index }?.let { bucket ->
             val pos = bucket.positionByIndex(index - bucket.index)
             if (pos == HIDDEN_ITEM) HIDDEN_ITEM else pos + bucket.position
         } ?: index
@@ -72,7 +70,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      */
     fun indexByPosition(position: Int): Int {
         checkIndex(position)
-        return getBucket(table) { it.position - position }?.let { bucket ->
+        return getBucket { it.position - position }?.let { bucket ->
             bucket.indexByPosition(position - bucket.position) + bucket.index
         } ?: position
     }
@@ -96,23 +94,25 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
     fun hide(fromIndex: Int, count: Int) {
         checkIndex(fromIndex)
         checkCount(count, fromIndex)
-        iterator.reset(fromIndex, true)
-        val top = fromIndex + count
-        var delta = 0
-        while (iterator.hasNext()) {
-            val bucket = iterator.next()
-            if (bucket.index >= top) {
-                iterator.previous()
-                iterator.forEachRemaining { it.position -= delta }
-            } else {
-                if (bucket.index <= fromIndex) {
-                    delta = bucket.hide(fromIndex, count) { index, count -> }
-                    // TODO optimizeBucket(iterator)
-                } else {
-                    bucket.position -= delta
-                    // TODO delta = mergeOverlappedEntries(iterator)
-                }
+        val topIndex = fromIndex + count
+        var i = requireBucket(fromIndex)
+        var hidden = 0
+        while (i < table.size) {
+            val bucket = table[i]
+            if (bucket.index >= topIndex) {
+                table.forEachRemaining(i) { position -= hidden }
+                break
             }
+            if (bucket.index <= fromIndex) {
+                hidden += bucket.hideEntries(fromIndex, count) { i, c -> }
+                if (bucket.splitIfBig()) {
+                    i++
+                }
+            } else {
+                bucket.position -= hidden
+                i = mergeContiguousEntries(i)
+            }
+            i++
         }
     }
 
@@ -128,18 +128,19 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         if (table.isEmpty()) {
             return
         }
-        iterator.reset(fromIndex)
-        val top = fromIndex + count
+        val topIndex = fromIndex + count
         var delta = 0
-        while (iterator.hasNext()) {
-            val bucket = iterator.next()
-            if (bucket.index >= top) {
-                iterator.previous()
-                iterator.forEachRemaining { it.position += delta }
-            } else {
-                bucket.position += delta
-                delta += bucket.show(fromIndex, count) { index, count -> }
-                // TODO removeEmptyBucket(iterator)
+        var i = findBucket(fromIndex).coerceAtLeast(0)
+        while (i < table.size) {
+            val bucket = table[i]
+            if (bucket.index >= topIndex) {
+                table.forEachRemaining(i) { position += delta }
+                break
+            }
+            bucket.position += delta
+            delta += bucket.showEntries(fromIndex, count) { i, c -> }
+            if (!bucket.removeIfEmpty()) {
+                i++
             }
         }
     }
@@ -151,37 +152,32 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      * @param count Количество вставляемых элементов
      * @param visible Признак видимости вставляемых элементов
      */
-    private fun insert(toIndex: Int, count: Int, visible: Boolean = true) {
+    fun insert(toIndex: Int, count: Int, visible: Boolean = true) {
         checkIndex(toIndex)
         checkCount(count, toIndex)
         if (visible) {
-            if (table.isEmpty()) {
-                // TODO ("notify")
-                return
-            }
-            iterator.reset(toIndex)
-            iterator.next().apply {
-                if (index <= toIndex) {
-                    insert(toIndex, count, visible)
-                    // TODO optimizeBucket(iterator)
-                } else {
-                    iterator.previous()
+            if (table.isNotEmpty()) {
+                var i = findBucket(toIndex).coerceAtLeast(0)
+                table[i].apply {
+                    if (index < toIndex) {
+                        insertEntries(toIndex, count, visible)
+                        i++
+                    }
                 }
-            }
-            iterator.forEachRemaining {
-                it.index += count
-                it.position += count
+                table.forEachRemaining(i) {
+                    index += count
+                    position += count
+                }
             }
             // TODO ("notify")
         } else {
-            iterator.reset(toIndex, true)
-            iterator.next().apply {
-                insert(toIndex, count, visible)
-                // TODO if (mergeOverlappedEntries(iterator) == 0) {
-                // TODO   optimizeBucket(iterator)
-                // TODO }
-            }
-            iterator.forEachRemaining { it.index += count }
+            val i = requireBucket(toIndex)
+            obtainClosestBucket(table[i], i, toIndex, count)
+                .apply {
+                    insertEntries(toIndex, count, visible)
+                    table.forEachRemaining(i + 1) { index += count }
+                    splitIfBig()
+                }
         }
     }
 
@@ -191,151 +187,103 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      * @param fromIndex Начальный индекс элемента
      * @param count Количество вставляемых элементов
      */
-    private fun remove(fromIndex: Int, count: Int) {
+    fun remove(fromIndex: Int, count: Int) {
         checkIndex(fromIndex)
         checkCount(count, fromIndex)
-        // TODO ("notify")
         if (table.isEmpty()) {
+            // TODO ("notify")
             return
         }
-        iterator.reset(fromIndex)
-        val top = fromIndex + count
-        var delta = 0
-        while (iterator.hasNext()) {
-            val bucket = iterator.next()
-            if (bucket.index >= top) {
-                iterator.previous()
-                // TODO mergeOverlappedEntries(iterator)
-                iterator.forEachRemaining {
-                    it.index -= count
-                    it.position -= count + delta
-                }
+        val topIndex = fromIndex + count
+        var removedHidden = 0
+        var i = findBucket(fromIndex).coerceAtLeast(0)
+        while (i < table.size) {
+            val bucket = table[i]
+            if (bucket.index >= topIndex) {
+                break
+            }
+            if (bucket.index <= fromIndex) {
+                removedHidden += bucket.removeEntries(fromIndex, count)
             } else {
-                if (bucket.index <= fromIndex) {
-                    delta = bucket.remove(fromIndex, count)
-                } else {
-                    bucket.position += delta
-                    delta += bucket.remove(fromIndex, count)
-                    bucket.position -= bucket.index + count - top
-                    bucket.index = fromIndex
-                }
-                // TODO removeEmptyBucket(iterator)
+                bucket.position += removedHidden
+                removedHidden += bucket.removeEntries(fromIndex, count)
+                bucket.position -= bucket.index - fromIndex
+                bucket.index = fromIndex
+            }
+            if (!bucket.removeIfEmpty()) {
+                i++
             }
         }
+        table.forEachRemaining(mergeContiguousEntries(i)) {
+            index -= count
+            position -= count + removedHidden
+        }
+        // TODO ("notify")
     }
 
     /**
      * Переместить элементы
      *
+     * Перемещается только один элемент
+     *
      * @param fromIndex Начальный индекс элемента
      * @param toIndex Конечный индекс элемента
      */
-    private fun move(fromIndex: Int, toIndex: Int) {
+    fun move(fromIndex: Int, toIndex: Int) {
         checkIndex(fromIndex)
         checkIndex(toIndex)
-        // TODO ("notify")
         if (table.isEmpty() || fromIndex == toIndex) {
+            // TODO ("notify")
             return
         }
-        iterator.reset(fromIndex)
-        var shown = 1
-        iterator.next().apply {
-            if (index <= fromIndex) {
-                shown -= remove(fromIndex, 1)
-                if (shown == 0) {
-                    // TODO removeEmptyBucket(iterator)
-                } else {
-                    // TODO mergeOverlappedEntries(iterator)
-                    iterator.previous()
-                    // TODO mergeOverlappedEntries(iterator)
+        var i = findBucket(fromIndex).coerceAtLeast(0)
+        var bucket = table[i]
+        var moveShown = 1
+        when {
+            bucket.index <= fromIndex -> {
+                if (bucket.index <= toIndex && (i == table.lastIndex || toIndex < table[i + 1].index)) {
+                    bucket.moveEntry(fromIndex, toIndex)
+                    // TODO ("notify")
+                    return
                 }
+                moveShown -= bucket.removeEntries(fromIndex, 1)
             }
-            if (fromIndex < toIndex) {
-                while (iterator.hasNext()) {
-                    val bucket = iterator.next()
-                    if (bucket.index > toIndex) {
-                        break
-                    }
-                    bucket.index--
-                    bucket.position -= shown
-                }
-                iterator.previous()
-            } else {
-                while (iterator.hasPrevious()) {
-                    val bucket = iterator.previous()
-                    if (bucket.index <= toIndex) {
-                        break
-                    }
-                    bucket.index++
-                    bucket.position += shown
-                }
+            toIndex < bucket.index -> {
+                // TODO ("notify")
+                return
+            }
+            else -> {
+                bucket.index--
+                bucket.position--
             }
         }
-        iterator.next().apply {
-
-        }
-        var a = table.binarySearch { it.index - fromIndex }
-        var bucket = table[a]
-        // когда перемещение в пределах одного бакета
-        if (toIndex >= bucket.index && a < table.lastIndex && toIndex < table[a + 1].index) {
-            bucket.move(fromIndex, toIndex)
-            if (mergeOverlappedEntries(a - 1) > 0) {
-                removeEmptyBucket(bucket)
-            } else {
-                if (mergeOverlappedEntries(a) > 0) {
-                    removeEmptyBucket(table[a + 1])
+        if (fromIndex < toIndex) {
+            while (i < table.lastIndex) {
+                bucket = table[++i]
+                if (bucket.index > toIndex) {
+                    break
                 }
-                optimizeBucket(bucket)
+                bucket.index--
+                bucket.position -= moveShown
             }
         } else {
-            val delta = 1 - bucket.remove(fromIndex, 1)
-            if (fromIndex < toIndex) {
-                if (delta == 0) {
-                    if (removeEmptyBucket(bucket)) {
-                        a--
-                    }
-                } else {
-                    if (mergeOverlappedEntries(a - 1) > 0 && removeEmptyBucket(bucket)) {
-                        a--
-                    }
-                    if (mergeOverlappedEntries(a) > 0) {
-                        removeEmptyBucket(table[a + 1])
-                    }
+            while (i > 0) {
+                bucket = table[--i]
+                if (bucket.index <= toIndex) {
+                    break
                 }
-                while (a < table.lastIndex && table[a].index < toIndex) table[++a].apply {
-                    index--
-                    position -= delta
-                }
-            } else {
-                if (delta == 0) {
-                    if (removeEmptyBucket(bucket)) {
-                        a--
-                    }
-                } else {
-                    if (mergeOverlappedEntries(a - 1) > 0 && removeEmptyBucket(bucket)) {
-                        a--
-                    }
-                    if (mergeOverlappedEntries(a) > 0) {
-                        removeEmptyBucket(table[a + 1])
-                    }
-                }
-                while (a > b) table[a--].apply {
-                    index++
-                    position += delta
-                }
-            }
-            bucket = table[b]
-            bucket.insert(toIndex, 1, delta != 0)
-            if (delta == 0) {
-                if (mergeOverlappedEntries(b - 1) > 0) {
-                    removeEmptyBucket(bucket)
-                } else {
-                    optimizeBucket(bucket)
-                }
-            } else {
-                optimizeBucket(bucket)
+                bucket.index++
+                bucket.position += moveShown
             }
         }
+        if (moveShown == 0) {
+            bucket = obtainClosestBucket(bucket, i, toIndex, 1)
+            bucket.insertEntries(toIndex, 1, false)
+        } else {
+            bucket.insertEntries(toIndex, 1, true)
+        }
+        bucket.splitIfBig()
+        // TODO ("notify")
     }
 
     /**
@@ -391,7 +339,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         while (i < entries.size) {
             val entry = entries[i]
             if (entry.index > stopIndex) {
-                do entries[i++].shiftPosition(-delta) while (i < entries.size)
+                entries.forEachRemaining(i) { shiftPosition(-delta) }
                 break
             }
             val top = entry.position + entry.hidden
@@ -434,7 +382,8 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
                         hidden -= delta
                         if (stopIndex < top) {
                             entries.add(
-                                i++, Entry(stopIndex, stopIndex - hidden, top - stopIndex + hidden)
+                                i++,
+                                Entry(stopIndex, stopIndex - hidden, top - stopIndex + hidden)
                             )
                             delta = count
                         }
@@ -460,7 +409,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         while (i < entries.size) {
             val entry = entries[i]
             if (entry.index >= stopIndex) {
-                do entries[i++].shiftPosition(delta) while (i < entries.size)
+                entries.forEachRemaining(i) { shiftPosition(delta) }
                 break
             }
             val top = entry.position + entry.hidden
@@ -514,7 +463,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
                     }
                 }
             }
-            while (i < entries.size) entries[i++].shiftIndex(count, 0)
+            entries.forEachRemaining(i) { shiftIndex(count, 0) }
         } else {
             if (i < 0) {
                 i = -i - 1
@@ -535,7 +484,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
             } else {
                 entries[i].hidden += count
             }
-            while (++i < entries.size) entries[i].shiftIndex(count, 0)
+            entries.forEachRemaining(i + 1) { shiftIndex(count, count) }
         }
     }
 
@@ -552,11 +501,11 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         var i = entries.binarySearch { it.index - startIndex }
         var startEntry: Entry? = null
         if (i < 0) {
-            i = -1 - 1
+            i = -i - 1
             if (i > 0) {
                 entries[i - 1].apply {
                     val removed = position + hidden - startIndex
-                    if (removed > 0) {
+                    if (removed >= 0) {
                         delta = removed.coerceAtMost(count)
                         startEntry = this.also { hidden -= delta }
                     }
@@ -566,7 +515,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         while (i < entries.size) {
             val entry = entries[i]
             if (entry.index > stopIndex) {
-                do entries[i++].shiftIndex(-count, -delta) while (i < entries.size)
+                entries.forEachRemaining(i) { shiftIndex(-count, -delta) }
                 break
             }
             val top = entry.position + entry.hidden
@@ -612,7 +561,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
                         delta++
                         if (top - index == 1) {
                             // случай, когда переносим единственную скрытую группу
-                            if (i > entries.size) {
+                            if (entries.size == 1) {
                                 index = toIndex
                                 position = toIndex
                                 return
@@ -633,19 +582,23 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
         }
         // delta = 1, если перемещаемый элемент скрыт
         if (fromIndex < toIndex) {
+            delta = -delta
             while (i < entries.size) {
-                val entry = entries[i++]
+                val entry = entries[i]
                 if (entry.index > toIndex) {
                     // случай, когда вставка перед скрытой группой
                     if (entry.index == toIndex + 1) {
-                        entry.index -= delta
+                        entry.index += delta
                         return
                     }
                     break
                 }
-                entry.shiftIndex(-1, -delta)
+                i++
+                entry.shiftIndex(-1, delta)
             }
-            i--
+            if (i > 0) {
+                i--
+            }
         } else {
             while (i > 0) {
                 val entry = entries[--i]
@@ -668,16 +621,16 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
             val top = position + hidden
             when {
                 // случай, когда toIndex < fromIndex и < первой скрытой группы
-                toIndex < index -> if (delta > 0) {
+                toIndex < index -> if (delta != 0) {
                     entries.add(0, Entry(toIndex, toIndex, 1))
                 }
-                // случай, когда вставка группы между видимыми группами,
+                // случай, когда вставка скрытой группы между видимыми группами,
                 // ситуации вставки перед скрытой группой обрабатываются выше
-                toIndex > top -> if (delta > 0) {
+                toIndex > top -> if (delta != 0) {
                     entries.add(i + 1, Entry(toIndex, toIndex - hidden, hidden + 1))
                 }
                 // случай, когда вставка скрытой группы внутрь или сразу после скрытой группы
-                delta > 0 -> {
+                delta != 0 -> {
                     hidden++
                 }
                 // случай, когда вставка видимой группы внутрь скрытой группы
@@ -728,14 +681,130 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
     /**
      * Получть бакет по условию
      *
-     * @param list Список бакетов
      * @param comparison Функция проверки условия поиска бакета,
      *  принимает парамером бакет, возвращает результат сравнения (-1, 0, 1)
      * @return Найденный бакет, либо null
      */
-    private fun getBucket(list: List<Bucket>, comparison: (Bucket) -> Int): Bucket? {
-        val i = list.binarySearch(comparison = comparison)
-        return if (i == -1) null else list[if (i < 0) -i - 2 else i]
+    private fun getBucket(comparison: (Bucket) -> Int): Bucket? {
+        val i = table.binarySearch(comparison = comparison)
+        return if (i == -1) null else table[if (i < 0) -i - 2 else i]
+    }
+
+    /**
+     * Получить бакет, содержащий элемент с указанным индексом
+     *
+     * Создать первый бакет, или расширить существующий,
+     * чтобы он содержал элемент с указанным индексом
+     *
+     * @param startIndex Индекс элемента, для которого нужен бакет
+     * @return Индекс бакета
+     */
+    private fun requireBucket(startIndex: Int): Int {
+        if (table.isNotEmpty()) {
+            val i = findBucket(startIndex)
+            if (i >= 0) {
+                return i
+            }
+            table.first().apply {
+                if (entries.size < maxBucketSize) {
+                    moveStart(startIndex)
+                    return 0
+                }
+            }
+        }
+        table.add(0, Bucket(startIndex, startIndex, mutableListOf()))
+        return 0
+    }
+
+    /**
+     * Найти бакет, содержащий элемент с указанным индексом
+     *
+     * @param index Индекс искомого элемента
+     * @return Индекс бакета
+     */
+    private fun findBucket(index: Int): Int {
+        val result = table.binarySearch { it.index - index }
+        return if (result < 0) -result - 2 else result
+    }
+
+    /**
+     * Определить лучший бакет для вставки скрытых элементов
+     *
+     * Если это вставка скрытых элементов и приходится в начало переданного бакета,
+     * при этом новый диапазон будет продолжением скрытых элементов предыдущего бакета,
+     * то вставку делаем сразу в предыдущий бакет.
+     *
+     * @param curr Текущий бакет
+     * @param index Индекс текущего бакета
+     * @param entryIndex Индекс вставляемых элементов
+     * @param count Количество вставляемых элементов
+     * @return Лучший бакет для вставки
+     */
+    private fun obtainClosestBucket(curr: Bucket, index: Int, entryIndex: Int, count: Int): Bucket {
+        if (curr.index == entryIndex && index > 0) {
+            val prev = table[index - 1]
+            with(prev.entries.last()) {
+                if (prev.index + position + hidden == entryIndex) {
+                    curr.index += count
+                    return prev
+                }
+            }
+        }
+        return curr
+    }
+
+    /**
+     * Объединить смежные записи в разных бакетах
+     *
+     * Если текущий бакет начинается со диапазона скрытых элементов,
+     * продолжающий последний диапазон предыдущего бакета,
+     * то переносим из текущего бакета начальный диапазон в конец предыдущего
+     *
+     * @param index Индекс текущего бакета
+     * @return Индекс текущего бакета после переноса элементов
+     */
+    private fun mergeContiguousEntries(index: Int): Int {
+        if (index > 0 && index < table.size) {
+            val prev = table[index - 1]
+            val curr = table[index]
+            prev.entries.lastOrNull()?.let { head ->
+                var end = prev.index + head.position + head.hidden - curr.index
+                var hidden = 0
+                while (curr.entries.isNotEmpty()) {
+                    val entry = curr.entries[0]
+                    if (entry.index > end) {
+                        break
+                    }
+                    val left = entry.position + entry.hidden - end
+                    hidden = curr.entries.removeAt(0).hidden
+                    if (left > 0) {
+                        end += left
+                        head.hidden += left
+                        break
+                    }
+                }
+                if (curr.entries.isEmpty()) {
+                    curr.removeIfEmpty()
+                    return index - 1
+                }
+                if (end > 0) {
+                    curr.entries.forEach { it.shiftIndex(-end, -hidden) }
+                    curr.index += end
+                    curr.position += end - hidden
+                }
+            }
+        }
+        return index
+    }
+
+    /**
+     * Выполнить действие для всех элементов до конца списка
+     *
+     * @param startIndex Начальный индекс
+     * @param action Действие
+     */
+    private inline fun <T> List<T>.forEachRemaining(startIndex: Int, action: T.() -> Unit) {
+        for (i in startIndex until size) action(get(i))
     }
 
     /**
@@ -801,7 +870,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      * @param notify Коллбэк
      * @return Количество новых скрытых элементов
      */
-    private fun Bucket.hide(startIndex: Int, count: Int, notify: (Int, Int) -> Unit): Int =
+    private fun Bucket.hideEntries(startIndex: Int, count: Int, notify: (Int, Int) -> Unit): Int =
         internalHide(entries, startIndex - index, count) { i, c -> notify(i + index, c) }
 
     /**
@@ -814,7 +883,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      * @param notify Коллбэк
      * @return Количество новых показанных элементов
      */
-    private fun Bucket.show(startIndex: Int, count: Int, notify: (Int, Int) -> Unit): Int {
+    private fun Bucket.showEntries(startIndex: Int, count: Int, notify: (Int, Int) -> Unit): Int {
         val offset = (index - startIndex).coerceAtLeast(0)
         return internalShow(
             entries, startIndex - index + offset, count - offset
@@ -830,7 +899,7 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      * @param count Количество удаляемых элементов
      * @return Количество удаленных скрытых элементов
      */
-    private fun Bucket.remove(startIndex: Int, count: Int): Int {
+    private fun Bucket.removeEntries(startIndex: Int, count: Int): Int {
         val offset = (index - startIndex).coerceAtLeast(0)
         return internalRemove(
             entries, startIndex - index + offset, count - offset
@@ -846,151 +915,73 @@ class HidingItemsImpl(private val maxBucketSize: Int = 1024) {
      * @param count Количество вставляемых элементов
      * @param visible Признак видимости вставляемых элементов
      */
-    private fun Bucket.insert(startIndex: Int, count: Int, visible: Boolean) {
+    private fun Bucket.insertEntries(startIndex: Int, count: Int, visible: Boolean) {
+        if (startIndex < index) {
+            if (visible) {
+                index += count
+                position += count
+                return
+            }
+            moveStart(startIndex)
+        }
         internalInsert(entries, startIndex - index, count, visible)
     }
 
     /**
-     * Переместить элементы в пределах бакета
+     * Переместить элемент в пределах бакета
      *
-     * Обертка над функцией вставки элементов
+     * Обертка над функцией перемещения элементов
      *
      * @param fromIndex Начальный индекс элемента
-     * @param toIndex Количество вставляемых элементов
+     * @param toIndex Конечный индекс элемента
      */
-    private fun Bucket.move(fromIndex: Int, toIndex: Int) {
+    private fun Bucket.moveEntry(fromIndex: Int, toIndex: Int) {
         internalMove(entries, fromIndex - index, toIndex - index)
     }
 
     /**
-     * Объединить скрытые диапазоны, если они перекрываются в соседних бакетах
+     * Сдвинуть начало бакета на новый индекс
      *
-     * @param bucketIndex Индекс первого бакета
-     * @return Количество пропускаемых скрытых элементов
+     * @param newIndex Новый индекс
      */
-    private fun mergeOverlappedEntries(bucketIndex: Int): Int {
-        if (bucketIndex < 0 || bucketIndex == table.lastIndex) {
-            return 0
-        }
-        val prev = table[bucketIndex]
-        val lastEntry = prev.entries.last()
-        var hidden = 0
-        table[bucketIndex + 1].apply {
-            var end = prev.index + lastEntry.position + lastEntry.hidden - index
-            var i = 0
-            while (i < entries.size) {
-                val entry = entries[i]
-                if (entry.index > end) {
-                    if (end > 0) {
-                        do entries[i++].shiftIndex(-end, -hidden) while (i < entries.size)
-                    }
-                    break
-                }
-                val top = entry.position + entry.hidden
-                val left = top - end
-                if (left > 0) {
-                    lastEntry.hidden += left
-                    end = top
-                }
-                hidden = entries.removeAt(i).hidden
-            }
-            index += end
-            position += end - hidden
-        }
-        return hidden
-    }
-
-    /**
-     * Создать бакет, если в первый уже заполнен
-     *
-     * @param startIndex Индекс элемента, для которого создается бакет
-     */
-    private fun ensureOpenBucket(startIndex: Int) {
-        if (table.isNotEmpty()) {
-            table.first().apply {
-                if (entries.size < maxBucketSize) {
-                    val offset = index - startIndex
-                    index -= offset
-                    position -= offset
-                    entries.forEach { it.shiftIndex(offset, 0) }
-                    return
-                }
-            }
-        }
-        table.add(0, Bucket(startIndex, startIndex, mutableListOf()))
+    private fun Bucket.moveStart(newIndex: Int) {
+        val offset = index - newIndex
+        index = newIndex
+        position -= offset
+        entries.forEach { it.shiftIndex(offset, 0) }
     }
 
     /**
      * Удалить бакет, если он пустой
      *
-     * @param bucket Удаляемый бакет
-     * @return true если бакет был удален
+     * @return True если бакет был удален
      */
-    private fun removeEmptyBucket(bucket: Bucket): Boolean {
-        if (bucket.entries.size > 0) {
+    private fun Bucket.removeIfEmpty(): Boolean {
+        if (entries.isNotEmpty()) {
             return false
         }
-        return table.remove(bucket)
+        return table.remove(this)
     }
 
     /**
-     * Оптимизировать размер бакета
-     *
-     * @param bucket Сокращаемый бакет
+     * Разделить бакет, если его размер стал слишком большим
      */
-    private fun optimizeBucket(bucket: Bucket) {}
-
-    private val iterator = BucketIterator()
-
-    private inner class BucketIterator : MutableListIterator<Bucket> {
-        var index: Int = 0
-            private set
-
-        override fun hasPrevious() = index > 0
-
-        override fun nextIndex() = index + 1
-
-        override fun previous(): Bucket {
-            return table[--index]
+    private fun Bucket.splitIfBig(): Boolean {
+        if (entries.size < maxBucketSize) {
+            return false
         }
-
-        override fun previousIndex() = index - 1
-
-        override fun add(element: Bucket) {
-            table.add(index, element)
+        val i = entries.size shr 1
+        var entry = entries[i]
+        val delta = entry.index
+        val hidden = entry.index - entry.position
+        val newBucket =
+            Bucket(index + delta, position + delta - hidden, mutableListOf())
+        while (i < entries.size) {
+            entry = entries.removeAt(i)
+            entry.shiftIndex(-delta, -hidden)
+            newBucket.entries.add(entry)
         }
-
-        override fun hasNext() = index < table.size
-
-        override fun next(): Bucket {
-            return table[index++]
-        }
-
-        override fun remove() {
-            table.removeAt(index)
-        }
-
-        override fun set(element: Bucket) {
-        }
-
-        fun forEachRemaining(action: (Bucket) -> Unit) {
-            while (index < table.size) action(table[index++])
-        }
-
-        fun reset(startIndex: Int, ensureExist: Boolean = false) {
-            val i = table.binarySearch { it.index - startIndex }
-            index = when {
-                i == -1 -> {
-                    if (ensureExist) {
-                        ensureOpenBucket(startIndex)
-                    }
-                    0
-                }
-                i < 0 -> -i - 2
-                else -> i
-            }
-        }
-
+        return true
     }
 
 }
