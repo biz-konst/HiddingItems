@@ -8,7 +8,7 @@ import org.junit.rules.TestName
 
 import org.junit.Rule
 
-class HiddenItemsTest {
+class HiddenItemsAdapter {
 
     @get:Rule
     var testName = TestName()
@@ -23,7 +23,7 @@ class HiddenItemsTest {
 
     private val notifyList = arrayListOf<NotifyEvent>()
 
-    private val hiddenImpl = HidingItemsImpl().apply {
+    private val hiddenImpl = HidingItemsAdapter(2).apply {
         setListener(object : ListUpdateCallback {
             override fun onInserted(position: Int, count: Int) {
                 notifyList.add(
@@ -73,7 +73,7 @@ class HiddenItemsTest {
         for (i in fromIndex until toIndex) set(i, value)
     }
 
-    private fun HidingItemsImpl.Bucket.log(): String = StringBuilder()
+    private fun HidingItemsAdapter.Bucket.log(): String = StringBuilder()
         .apply {
             if (entries.isEmpty()) {
                 appendLine("\tentries empty")
@@ -85,7 +85,7 @@ class HiddenItemsTest {
         }
         .toString()
 
-    private fun HidingItemsImpl.log(full: Boolean = false): String = StringBuilder()
+    private fun HidingItemsAdapter.log(full: Boolean = false): String = StringBuilder()
         .apply {
             if (table.isEmpty()) {
                 appendLine("table empty")
@@ -100,7 +100,7 @@ class HiddenItemsTest {
         }
         .toString()
 
-    private fun fromHidden(hidden: HidingItemsImpl, size: Int): Array<Boolean> {
+    private fun fromHidden(hidden: HidingItemsAdapter, size: Int): Array<Boolean> {
         return Array(size) { !hidden.isHidden(it) }
     }
 
@@ -110,7 +110,7 @@ class HiddenItemsTest {
         return result.toTypedArray()
     }
 
-    private fun positionsFromHidden(hidden: HidingItemsImpl, size: Int): Array<Int> {
+    private fun positionsFromHidden(hidden: HidingItemsAdapter, size: Int): Array<Int> {
         val result = mutableListOf<Int>()
         repeat(hidden.positionByIndex(size)) { i -> result.add(hidden.indexByPosition(i)) }
         return result.toTypedArray()
@@ -172,7 +172,7 @@ class HiddenItemsTest {
     }
 
     private fun insertElements(fromIndex: Int, count: Int = 1, visible: Boolean = true) {
-        hiddenImpl.insert(fromIndex, count, visible)
+        hiddenImpl.onInserted(fromIndex, count)
         if (visible) {
             listNotifyList.add(
                 NotifyEvent(
@@ -186,7 +186,7 @@ class HiddenItemsTest {
     }
 
     private fun removeElements(fromIndex: Int, count: Int = 1) {
-        hiddenImpl.remove(fromIndex, count)
+        hiddenImpl.onRemoved(fromIndex, count)
         val hidden = list.localPos(fromIndex + count) - list.localPos(fromIndex)
         if (hidden > 0) {
             listNotifyList.add(
@@ -206,7 +206,7 @@ class HiddenItemsTest {
         if (fromIndex == toIndex) {
             return
         }
-        hiddenImpl.move(fromIndex, toIndex)
+        hiddenImpl.onMoved(fromIndex, toIndex)
         if (list[fromIndex] && list.localPos(fromIndex) != list.localPos(toIndex)) {
             listNotifyList.add(
                 NotifyEvent(
@@ -251,7 +251,7 @@ class HiddenItemsTest {
             for (k in 1..15 - i) {
                 list.clear()
                 repeat(15) { list.add(true) }
-                hiddenImpl.table.clear()
+                hiddenImpl.clear()
                 hideElements(1)
                 hideElements(4, count = 2)
                 hideElements(9, count = 3)
@@ -260,6 +260,7 @@ class HiddenItemsTest {
 
                 println("i=$i, k=$k")
                 hideElements(i, count = k)
+                hiddenImpl.pack()
 
                 log()
                 checkHidden()
@@ -275,7 +276,7 @@ class HiddenItemsTest {
             for (k in 1..15 - i) {
                 list.clear()
                 repeat(15) { list.add(true) }
-                hiddenImpl.table.clear()
+                hiddenImpl.clear()
                 hideElements(1)
                 hideElements(4, count = 2)
                 hideElements(9, count = 3)
@@ -284,6 +285,7 @@ class HiddenItemsTest {
 
                 println("i=$i, k=$k")
                 showElements(i, count = k)
+                hiddenImpl.pack()
 
                 log()
                 checkHidden()
@@ -299,7 +301,7 @@ class HiddenItemsTest {
             for (k in 1..2) {
                 list.clear()
                 repeat(15) { list.add(true) }
-                hiddenImpl.table.clear()
+                hiddenImpl.clear()
                 hideElements(1)
                 hideElements(4, count = 2)
                 hideElements(9, count = 3)
@@ -308,6 +310,7 @@ class HiddenItemsTest {
 
                 println("i=$i, k=$k")
                 insertElements(i, count = k)
+                hiddenImpl.pack()
 
                 log()
                 checkHidden()
@@ -315,27 +318,28 @@ class HiddenItemsTest {
         }
     }
 
-    @Test
-    fun `insert in loop (0 to list-lastIndex) from 1 to 2 hide elements and return valid table`() {
-        for (i in 0..14) {
-            for (k in 1..2) {
-                list.clear()
-                repeat(15) { list.add(true) }
-                hiddenImpl.table.clear()
-                hideElements(1)
-                hideElements(4, count = 2)
-                hideElements(9, count = 3)
-                notifyList.clear()
-                listNotifyList.clear()
-
-                println("i=$i, k=$k")
-                insertElements(i, count = k, visible = false)
-
-                log()
-                checkHidden()
-            }
-        }
-    }
+//    @Test
+//    fun `insert in loop (0 to list-lastIndex) from 1 to 2 hide elements and return valid table`() {
+//        for (i in 0..14) {
+//            for (k in 1..2) {
+//                list.clear()
+//                repeat(15) { list.add(true) }
+//                hiddenImpl.clear()
+//                hideElements(1)
+//                hideElements(4, count = 2)
+//                hideElements(9, count = 3)
+//                notifyList.clear()
+//                listNotifyList.clear()
+//
+//                println("i=$i, k=$k")
+//                insertElements(i, count = k, visible = false)
+//                hiddenImpl.pack()
+//
+//                log()
+//                checkHidden()
+//            }
+//        }
+//    }
     //endregion
 
     //region remove
@@ -345,7 +349,7 @@ class HiddenItemsTest {
             for (k in 1..15 - i) {
                 list.clear()
                 repeat(15) { list.add(true) }
-                hiddenImpl.table.clear()
+                hiddenImpl.clear()
                 hideElements(1)
                 hideElements(4, count = 2)
                 hideElements(9, count = 3)
@@ -354,6 +358,7 @@ class HiddenItemsTest {
 
                 println("i=$i, k=$k")
                 removeElements(i, count = k)
+                hiddenImpl.pack()
 
                 log()
                 checkHidden()
@@ -369,7 +374,7 @@ class HiddenItemsTest {
             for (k in 14 downTo 0) {
                 list.clear()
                 repeat(15) { list.add(true) }
-                hiddenImpl.table.clear()
+                hiddenImpl.clear()
                 hideElements(1)
                 hideElements(4, count = 2)
                 hideElements(9, count = 3)
@@ -378,6 +383,7 @@ class HiddenItemsTest {
 
                 println("i=$i, to=$k")
                 moveElements(i, k)
+                hiddenImpl.pack()
 
                 log()
                 checkHidden()

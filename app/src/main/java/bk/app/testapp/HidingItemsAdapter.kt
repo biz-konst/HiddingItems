@@ -1,1241 +1,1193 @@
 package bk.app.testapp
 
-import androidx.recyclerview.widget.AsyncDifferConfig
-import androidx.recyclerview.widget.AsyncListDiffer
-import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListUpdateCallback
-import java.util.*
-import kotlin.NoSuchElementException
 
-interface HidingItems {
-    fun hide(position: Int, count: Int)
-    fun isHidden(index: Int): Boolean
-    fun show(position: Int, count: Int)
-}
+/**
+ * Адаптер виртуального скрытия элементов в списках
+ *
+ * Выполняет преобразование индекса элемента в его позицию в списке,
+ * с учетом признака "скрыт". Например, в списке есть элементы 0, 1, 2,...
+ * элемент 1 скрыт, в этом случае для элемента с индексом 0 позиция будет 0,
+ * для элемента с индексом 1 позиция равна HIDDEN_ITEM, для элемента
+ * с индексом 2 позиция - 1.
+ *
+ * Класс реализцет интерфейс ListUpdateCallback, для обработки событий
+ * изменения исходного списка. Входящие события транслируются,
+ * с учетом скрытых элементов, в слушатель listener
+ *
+ * Для ускорения операций модификации списка скрытых элементов, этот список
+ * разбивается на отдельные фрагменты (бакеты), максимальный размер которых
+ * определяется параметром конструктора maxBucketSize
+ */
+@Suppress("MemberVisibilityCanBePrivate")
+class HidingItemsAdapter(
+    private val maxBucketSize: Int = 1024,
+    listener: ListUpdateCallback? = null
+) : ListUpdateCallback, HidingItems {
 
-// TODO ("replace internal with private")
-class HidingItemsAdapter(private val callback: ListUpdateCallback?) : HidingItems,
-    ListUpdateCallback {
+    @set:JvmName("_setListener")
+    var listener: ListUpdateCallback? = listener
+        private set
 
-    private val nodeSize = 2//Int.MAX_VALUE
+    /**
+     * Скрытые элементы представлены как список записей с полями:
+     *  плоский индекс первого элемента,
+     *  видимая позиция первого элемента,
+     *  количество скрытых элементов до начала следующей записи
+     *
+     * Для получения позиции с учетом скрытых элементов по индексу элемента
+     * используется формула:
+     *  позиция = индекс - количество скрытых элементов от начала списка до индекса
+     *
+     * Для получения индекса элемента по его позиции в показанном списке
+     * используется формула:
+     *  индекс = позиция + количество скрытых элементов от начала списка до индекса
+     *
+     */
 
-    internal val hiddenNodes = mutableListOf<HiddenNode>()
+    companion object {
+        const val HIDDEN_ITEM = -1
+    }
 
-    internal open class HiddenLeaf(
-        var global: Int,
-        var local: Int,
-        var amount: Int,
+    internal val table = mutableListOf<Bucket>()
+
+    internal class Entry(
+        var index: Int,
+        var position: Int,
+        var hidden: Int
     )
 
-    internal class HiddenNode(
-        var global: Int,
-        var local: Int,
-        var amount: Int,
-        val leaves: MutableList<HiddenLeaf>
+    internal class Bucket(
+        var index: Int,
+        var position: Int,
+        val entries: MutableList<Entry>
     )
 
-    fun shownPos(position: Int): Int {
-        val node = getNode { it.global - position } ?: return position
-        val leaf = node.getLeaf { it.global - position } ?: return position
+    private data class NotifyData(var x: Int = 0, var y: Int = 0) {
 
-        val sp = position - leaf.amount
-        return if (sp < leaf.local) -1 else sp - node.amount
-    }
-
-    fun rawPos(position: Int): Int {
-        val node = getNode { it.local - position } ?: return position
-        val leaf = node.getLeaf { it.local - position } ?: return position
-
-        return position + leaf.amount + node.amount
-    }
-
-    fun hideF(position: Int, count: Int) {
-        check(position >= 0)
-        check(count > 0)
-        internalHide(position, count)
-        dispatchLastEvent()
-    }
-
-    fun showF(position: Int, count: Int) {
-        check(position >= 0)
-        check(count > 0)
-        internalShow(position, count)
-        dispatchLastEvent()
-    }
-
-    private fun findNode(
-        fromIndex: Int = 0,
-        toIndex: Int = hiddenNodes.lastIndex,
-        comparison: (HiddenNode) -> Int
-    ): Int {
-        var low = fromIndex
-        var high = toIndex
-
-        while (low <= high) {
-            val mid = (low + high).ushr(1)
-            val cmp = comparison(hiddenNodes[mid])
-
-            when {
-                cmp < 0 -> low = mid + 1
-                cmp > 0 -> high = mid - 1
-                else -> return mid
-            }
+        fun set(x: Int, y: Int) {
+            this.x = x
+            this.y = y
         }
 
-        return high
     }
 
-    private fun getNode(comparison: (HiddenNode) -> Int) =
-        findNode(comparison = comparison).let {
-            if (it < 0) null else hiddenNodes[it]
-        }
+    private var notifyData = NotifyData()
 
-    private fun HiddenNode.findLeaf(comparison: (HiddenLeaf) -> Int) =
-        leaves.binarySearch(comparison = comparison)
-
-    private fun HiddenNode.getLeaf(comparison: (HiddenLeaf) -> Int) =
-        findLeaf(comparison = comparison).let {
-            if (it == -1) null else leaves[if (it < 0) -it - 2 else it]
-        }
-
-    private fun addNode(position: Int): HiddenNode {
-        return HiddenNode(position, position, 0, mutableListOf())
-            .also { hiddenNodes.add(0, it) }
+    /**
+     * Очистить списки скрытых диапазонов
+     */
+    fun clear() {
+        table.clear()
     }
 
-    private fun correctLeaves(li: Int, ni: Int, amount: Int) {
-        val leaves = hiddenNodes[ni].leaves
-        var i = li
-        while (i < leaves.size) {
-            leaves[i++].let {
-                it.local -= amount
-                it.amount += amount
-            }
-        }
-        i = adjustNodeSize(ni)
-        while (++i < hiddenNodes.size) {
-            hiddenNodes[i].amount += amount
-        }
-    }
-
-    private fun getNodeSize(): Int = nodeSize
-
-    private fun adjustNodeSize(index: Int): Int {
-        var result = index
-        val node = hiddenNodes[result]
-        if (node.leaves.size == 0) {
-            hiddenNodes.removeAt(result--)
-        } else {
-            node.leaves[0].let {
-                node.global = it.global
-                node.local = it.local
-            }
-            if (node.leaves.size > getNodeSize()) {
-                val mid = node.leaves.size.ushr(1)
-                val leaf = node.leaves.removeAt(mid)
-                val new = HiddenNode(leaf.global, leaf.local, node.amount, mutableListOf(leaf))
-                while (node.leaves.size > mid) {
-                    new.leaves.add(node.leaves.removeAt(mid))
-                }
-                hiddenNodes.add(++result, new)
-            }
-        }
-        return result
-    }
-
-    private fun internalHide(position: Int, count: Int) {
-        notifyRemoved(position, count)
-        var ni = findNode { it.global - position }
-        var node = if (ni < 0) {
-            ni = 0
-            addNode(position)
-        } else {
-            hiddenNodes[ni]
-        }
-        var li = node.findLeaf { it.global - position }
-        var leaves = node.leaves
-        val endPos = position + count
-        var amount = count
-        var leaf: HiddenLeaf
-        if (li < 0) {
-            li = -li - 1
-            if (li > 0) {
-                leaf = leaves[li - 1]
-                val topPos = leaf.local + leaf.amount
-                if (position <= topPos) {
-                    amount = endPos - topPos
-                    if (amount <= 0) {
-                        return
-                    }
-                    leaf.amount += amount
+    /**
+     * Упаковать бакеты, если они сильно разрежены
+     */
+    fun pack() {
+        if (table.isNotEmpty()) {
+            var prev = table.first()
+            var i = 1
+            while (i < table.size) {
+                val curr = table[i]
+                if (prev.entries.size + curr.entries.size < maxBucketSize) {
+                    prev.join(table.removeAt(i))
                 } else {
-                    leaf = HiddenLeaf(position, position - leaf.amount, amount + leaf.amount)
-                    leaves.add(li++, leaf)
+                    prev = curr
+                    i++
                 }
-            } else {
-                leaf = HiddenLeaf(position, position, amount)
-                leaves.add(li++, leaf)
             }
-        } else {
-            leaf = leaves[li++]
-            val topPos = leaf.local + leaf.amount
-            amount = endPos - topPos
-            if (amount <= 0) {
+        }
+    }
+
+    /**
+     * Получить позицию элемента по индексу
+     *
+     * Если элемент скрыт, возвращается значение HIDDEN_ITEM
+     *
+     * Для получения позиции находим ближайшую запись с индексом меньше либо равно заданному
+     * если запись отсутствует, значит скрытых предшествующих элементов нет и позиция равна индексу.
+     * Если запись существует, вычисляется позиция как (индекс - количество скрытых элементов).
+     * Полученная позиция сравнивается с позицией записи, если результат меньше 0,
+     * значит элемент скрыт и надо вернуть значение HIDDEN_ITEM
+     *
+     * @param index Индекс элемента
+     * @return Позиция элемента, или значение HIDDEN_ITEM
+     */
+    fun positionByIndex(index: Int): Int {
+        checkIndex(index)
+        return getBucket { it.index - index }?.run {
+            val pos = positionByIndex(index - this.index)
+            if (pos == HIDDEN_ITEM) HIDDEN_ITEM else pos + position
+        } ?: index
+    }
+
+    /**
+     * Получить индекс элемента по позиции
+     *
+     * Для получения индекса находим ближайшую запись с позицией меньше либо равно заданной
+     * если запись отсутствует, значит скрытых предшествующих элементов нет и индекс равен позиции.
+     * Если запись существует, вычисляется индекс как (позиция + количество скрытых элементов).
+     *
+     * @param position Позиция элемента
+     * @return Индекс элемента
+     */
+    fun indexByPosition(position: Int): Int {
+        checkIndex(position)
+        return getBucket { it.position - position }?.run {
+            indexByPosition(position - this.position) + index
+        } ?: position
+    }
+
+    /**
+     * Проверить, является ли элемент скрытым
+     *
+     * Для проверки получаем позицию элемента по индексу и сравниваем со значеним HIDDEN_ITEM
+     *
+     * @param index Индекс элемента
+     * @return True если элемент скрыт
+     */
+    override fun isHidden(index: Int): Boolean = positionByIndex(index) == HIDDEN_ITEM
+
+    /**
+     * Скрыть элементы
+     *
+     * @param fromIndex Индекс первого элемента
+     * @param count Количество элементов
+     */
+    override fun hide(fromIndex: Int, count: Int) {
+        checkIndex(fromIndex)
+        if (count > 0) {
+            setNotifyClosest(notifyData, fromIndex, fromIndex + count)
+            var i = requireBucket(fromIndex)
+            table[i].apply {
+                var addedHidden = hideEntries(fromIndex, count)
+                addedHidden -= cutEntries(++i, fromIndex, count)
+                if (addedHidden > 0) {
+                    table.forEachRemaining(i) { position -= addedHidden }
+                }
+                splitBigBucket(this)
+            }
+            notifyRemove(notifyData)
+        }
+    }
+
+    /**
+     * Показать элементы
+     *
+     * @param fromIndex Индекс первого элемента
+     * @param count Количество элементов
+     */
+    override fun show(fromIndex: Int, count: Int) {
+        checkIndex(fromIndex)
+        if (count == 0 || table.isEmpty()) {
+            return
+        }
+        val notifyList = arrayListOf<NotifyData>()
+        val topIndex = fromIndex + count
+        var i = findBucket(fromIndex).coerceAtLeast(0)
+        var removeHidden = 0
+        while (i < table.size) {
+            val bucket = table[i]
+            if (bucket.index >= topIndex) {
+                if (removeHidden > 0) {
+                    table.forEachRemaining(i) { position += removeHidden }
+                }
+                break
+            }
+            bucket.position += removeHidden
+            removeHidden += bucket.showEntries(fromIndex, count) { idx, cnt ->
+                val pos = closestPosition(idx)
+                notifyList.add(NotifyData(pos, pos + cnt))
+            }
+            if (!removeEmptyBucket(bucket)) {
+                i++
+            }
+        }
+        notifyList.forEach { notifyInsert(it) }
+    }
+
+    /**
+     * Установить слушатель уведомлений об изменении списка элементов
+     *
+     * @param listener Новый слушатель уведомления об изменении списка элементов
+     */
+    fun setListener(listener: ListUpdateCallback?) {
+        this.listener = listener
+    }
+
+    /**
+     * Вставить элементы
+     *
+     * @param toIndex Начальный индекс элемента
+     * @param count Количество вставляемых элементов
+     * @param visible Признак видимости вставляемых элементов
+     */
+    internal fun insert(toIndex: Int, count: Int, visible: Boolean = true) {
+        checkIndex(toIndex)
+        if (count > 0) {
+            if (visible) {
+                notifyData.x = closestPosition(toIndex)
+                notifyData.y = notifyData.x + count
+                if (table.isNotEmpty()) {
+                    var i = findBucket(toIndex).coerceAtLeast(0)
+                    table[i].apply {
+                        if (index < toIndex) {
+                            insertEntries(toIndex, count, visible)
+                            i++
+                        }
+                    }
+                    table.forEachRemaining(i) {
+                        index += count
+                        position += count
+                    }
+                }
+                notifyInsert(notifyData)
+            } else {
+                val i = requireBucket(toIndex)
+                obtainClosestBucket(table[i], i, toIndex, count)
+                    .apply {
+                        insertEntries(toIndex, count, visible)
+                        table.forEachRemaining(i + 1) { index += count }
+                        splitBigBucket(this)
+                    }
+            }
+        }
+    }
+
+    /**
+     * Удалить элементы
+     *
+     * @param fromIndex Начальный индекс элемента
+     * @param count Количество вставляемых элементов
+     */
+    internal fun remove(fromIndex: Int, count: Int) {
+        checkIndex(fromIndex)
+        if (count > 0) {
+            if (table.isEmpty()) {
+                notifyData.set(fromIndex, fromIndex + count)
                 return
             }
-            leaf.amount += amount
-        }
-        do {
-            while (li < leaves.size) {
-                val next = leaves[li]
-                if (next.global > endPos) {
-                    correctLeaves(li, ni, amount)
-                    return
-                }
-                val topPos = next.local + next.amount
-                if (topPos > endPos) {
-                    leaf.amount += topPos - endPos
-                }
-                amount = leaf.amount - next.amount
-                leaves.removeAt(li)
-            }
-            ni = adjustNodeSize(ni)
-            if (++ni >= hiddenNodes.size) {
-                break
-            }
-            node = hiddenNodes[ni]
-            li = 0
-            leaves = node.leaves
-        } while (true)
-    }
-
-    private fun internalShow(position: Int, count: Int) {
-        if (hiddenNodes.size == 0) {
-            return
-        }
-        var ni = findNode { it.global - position }
-        var node = if (ni < 0) {
-            ni = 0
-            addNode(position)
-        } else {
-            hiddenNodes[ni]
-        }
-        var li = node.findLeaf { it.global - position }
-        var leaves = node.leaves
-        val endPos = position + count
-        var amount = 0
-        if (li < 0) {
-            li = -li - 1
-            if (li > 0) {
-                var leaf = leaves[li - 1]
-                val topPos = leaf.local + leaf.amount
-                if (position < topPos) {
-                    amount = topPos - position
-                    leaf.amount -= amount
-                    if (topPos > endPos) {
-                        amount = endPos - position
-                        leaf =
-                            HiddenLeaf(endPos, endPos - leaf.amount, topPos - endPos + leaf.amount)
-                        leaves.add(li++, leaf)
-                    }
-                    notifyInserted(position, amount)
-                }
-            }
-        } else {
-            val leaf = leaves[li]
-            val topPos = leaf.local + leaf.amount
-            if (topPos > endPos) {
-                amount = endPos - position
-                leaf.global = endPos
-                leaf.local += amount
-                leaf.amount -= amount
-                li++
-            } else {
-                amount = topPos - position
-                leaves.removeAt(li)
-            }
-            notifyInserted(position, amount)
-        }
-        do {
-            while (li < leaves.size) {
-                val leaf = leaves[li]
-                if (leaf.global > endPos) {
-                    correctLeaves(li, ni, -amount)
-                    return
-                }
-                val savePos = leaf.global
-                val topPos = leaf.local + leaf.amount
-                var shown: Int
-                if (topPos > endPos) {
-                    shown = endPos - leaf.global
-                    amount += shown
-                    leaf.global = endPos
-                    leaf.local += amount
-                    leaf.amount -= amount
-                    li++
-                } else {
-                    shown = topPos - leaf.global
-                    amount += shown
-                    leaves.removeAt(li)
-                }
-                notifyInserted(savePos, shown)
-            }
-            ni = adjustNodeSize(ni)
-            if (++ni >= hiddenNodes.size) {
-                break
-            }
-            node = hiddenNodes[ni]
-            li = 0
-            leaves = node.leaves
-        } while (true)
-    }
-
-    internal fun internalInsert(position: Int, count: Int, hide: Boolean = false) {
-        if (hiddenNodes.size == 0 && !hide) {
-            notifyInserted(position, count)
-            return
-        }
-        var ni = findNode { it.global - position }
-        var node = if (ni < 0) {
-            ni = 0
-            addNode(position)
-        } else {
-            hiddenNodes[ni]
-        }
-        var li = node.findLeaf { it.global - position }
-        var leaves = node.leaves
-        val endPos = position + count
-        if (hide) {
-            if (li < 0) {
-                li = -li - 1
-                if (li > 0) {
-                    var leaf = leaves[li - 1]
-                    if (leaf.local + leaf.amount < position) {
-                        leaf = HiddenLeaf(position, position - leaf.amount, leaf.amount + count)
-                        leaves.add(li++, leaf)
-                    } else {
-                        leaf.amount += count
-                    }
-                } else {
-                    leaves.add(li++, HiddenLeaf(position, position, count))
-                }
-                ni = adjustNodeSize(ni)
-            } else {
-                leaves[li++].amount += count
-            }
-            do {
-                while (li < leaves.size) {
-                    leaves[li++].let {
-                        it.global += count
-                        it.amount += count
+            setNotifyClosest(notifyData, fromIndex, fromIndex + count)
+            var i = findBucket(fromIndex).coerceAtLeast(0)
+            var removedHidden = 0
+            table[i].apply {
+                if (index <= fromIndex) {
+                    removedHidden = removeEntries(fromIndex, count)
+                    if (!removeEmptyBucket(this)) {
+                        i++
                     }
                 }
-                if (++ni >= hiddenNodes.size) {
-                    break
-                }
-                node = hiddenNodes[ni]
-                li = 0
-                leaves = node.leaves
-            } while (true)
-        } else {
-            if (li < 0) {
-                li = -li - 1
-                if (li > 0) {
-                    var leaf = leaves[li - 1]
-                    val left = leaf.local + leaf.amount - position
-                    if (left > 0) {
-                        leaf.amount -= left
-                        leaf = HiddenLeaf(endPos, endPos - leaf.amount, leaf.amount + left)
-                        leaves.add(li++, leaf)
-                        ni = adjustNodeSize(ni)
-                    }
-                }
+                removedHidden += cutEntries(i, fromIndex, count)
             }
-            do {
-                while (li < leaves.size) {
-                    leaves[li++].let {
-                        it.global += count
-                        it.local += count
-                    }
-                }
-                if (++ni >= hiddenNodes.size) {
-                    break
-                }
-                node = hiddenNodes[ni]
-                li = 0
-                leaves = node.leaves
-            } while (true)
-            notifyInserted(position, count)
+            table.forEachRemaining(i) {
+                index -= count
+                position -= count - removedHidden
+            }
+            notifyRemove(notifyData)
         }
     }
 
-    internal fun internalRemove(position: Int, count: Int) {
-        notifyRemoved(position, count)
-        if (hiddenNodes.size == 0) {
+    /**
+     * Переместить элементы
+     *
+     * Перемещается только один элемент
+     *
+     * @param fromIndex Начальный индекс элемента
+     * @param toIndex Конечный индекс элемента
+     */
+    internal fun move(fromIndex: Int, toIndex: Int) {
+        checkIndex(fromIndex)
+        checkIndex(toIndex)
+        if (fromIndex == toIndex || table.isEmpty()) {
+            notifyData.set(fromIndex, toIndex)
+            notifyMove(notifyData)
             return
         }
-        var ni = findNode { it.global - position }
-        var node = if (ni < 0) {
-            ni = 0
-            addNode(position)
-        } else {
-            hiddenNodes[ni]
-        }
-        var li = node.findLeaf { it.global - position }
-        var leaves = node.leaves
-        val endPos = position + count
-        var amount = 0
-        var leaf: HiddenLeaf? = null
-        if (li < 0) {
-            li = -li - 1
-            if (li > 0) {
-                leaf = leaves[li - 1]
-                val topPos = leaf.local + leaf.amount
-                if (topPos >= position) {
-                    amount = if (topPos < endPos) topPos - position else count
-                    leaf.amount -= amount
-                } else {
-                    leaf = null
-                }
-            }
-        }
-        do {
-            while (li < leaves.size) {
-                val next = leaves[li]
-                if (next.global > endPos) {
-                    do {
-                        leaves[li++].let {
-                            it.global -= count
-                            it.local -= count
-                            it.local += amount
-                            it.amount -= amount
-                        }
-                    } while (li < leaves.size)
-                    break
-                }
-                val topPos = next.local + next.amount
-                if (topPos > endPos) {
-                    amount += endPos - next.global
-                    if (leaf != null) {
-                        leaf.amount += topPos - endPos
-                        leaves.removeAt(li)
-                    } else {
-                        next.global = position
-                        next.local -= count - amount
-                        next.amount -= amount
-                        li++
-                    }
-                } else {
-                    amount += topPos - next.global
-                    leaves.removeAt(li)
-                }
-            }
-            ni = adjustNodeSize(ni)
-            if (++ni >= hiddenNodes.size) {
-                break
-            }
-            node = hiddenNodes[ni]
-            li = 0
-            leaves = node.leaves
-        } while (true)
-    }
-
-    internal fun internalMove(fromPosition: Int, toPosition: Int) {
-        if (hiddenNodes.size == 0 || fromPosition == toPosition) {
-            return
-        }
-        // ищем fromIndex + 1 чтобы сразу учесть краевой случай,
-        // когда удаляется строка, предшествующая скрытой группе
-        var ni = findNode { it.global - fromPosition - 1 }
-        var node = if (ni < 0) {
-            ni = 0
-            addNode(fromPosition + 1)
-        } else {
-            hiddenNodes[ni]
-        }
-        var li = node.findLeaf { it.global - fromPosition - 1 }
-        var leaves = node.leaves
-        var amount = 0
-        if (li < 0) {
-            li = -li - 1
-            if (li > 0) {
-                val leaf = leaves[li - 1]
-                val topPos = leaf.local + leaf.amount
-                if (topPos > fromPosition) {
-                    amount++
-                    if (topPos - 1 == leaf.global) {
-                        leaves.removeAt(li)
-                        adjustNodeSize(ni)
-                    } else {
-                        leaf.amount--
-                    }
-                }
-            }
-        } else if (li > 0) {
-            val leaf = leaves[li - 1]
-            if (leaf.local + leaf.amount == fromPosition) {
-                leaf.amount = leaves[li].amount
-                leaves.removeAt(li)
-                adjustNodeSize(ni)
-            }
-        }
-        val local = 1 - amount
-        if (fromPosition < toPosition) {
-            do {
-                while (li < leaves.size) {
-                    val leaf = leaves[li]
-                    if (leaf.global > toPosition) {
-                        if (leaf.global == toPosition + 1) {
-                            leaf.global -= amount
-                            return
-                        }
-                        break
-                    }
-                    leaf.global--
-                    leaf.local -= local
-                    leaf.amount -= amount
-                    li++
-                }
-                if (++ni >= hiddenNodes.size) {
-                    break
-                }
-                node = hiddenNodes[ni]
-                li = 0
-                leaves = node.leaves
-            } while (true)
-            if (li != 0) {
-                li--
-            }
-        } else {
-            do {
-                while (li > 0) {
-                    val leaf = leaves[--li]
-                    if (leaf.global <= toPosition) {
-                        if (leaf.global == toPosition) {
-                            leaf.global += local
-                            leaf.local += local
-                            leaf.amount += amount
-                            return
-                        }
-                        break
-                    }
-                    leaf.global++
-                    leaf.local += local
-                    leaf.amount += amount
-                }
-                if (++ni >= hiddenNodes.size) {
-                    break
-                }
-                node = hiddenNodes[ni]
-                li = 0
-                leaves = node.leaves
-            } while (true)
-        }
-        val leaf = leaves[li]
-        val topPos = leaf.local + leaf.amount
+        setNotifyClosest(notifyData, fromIndex, toIndex)
+        var i = findBucket(fromIndex).coerceAtLeast(0)
+        val src = table[i]
+        var moveShown = 1
         when {
-            // случай, когда toIndex < fromIndex и < первой скрытой группы
-            // или переносим первую скрытую группу размером 1 (удалили выше)
-            toPosition < leaf.global -> {
-                if (amount > 0) {
-                    leaves.add(0, HiddenLeaf(toPosition, toPosition, 1))
-                    adjustNodeSize(ni)
+            src.index <= fromIndex -> {
+                if (src.index <= toIndex && (i == table.lastIndex || toIndex < table[i + 1].index)) {
+                    if (src.moveEntry(fromIndex, toIndex) == 0) {
+                        notifyMove(notifyData)
+                    }
+                    return
                 }
+                moveShown -= src.removeEntries(fromIndex, 1)
             }
-            toPosition > topPos -> {
-                if (amount > 0) {
-                    leaves.add(
-                        li + 1,
-                        HiddenLeaf(toPosition, toPosition - leaf.amount, leaf.amount + 1)
-                    )
-                    adjustNodeSize(ni)
-                }
-            }
-            toPosition == topPos -> {
-                if (amount > 0) {
-                    leaf.amount++
-                }
+            toIndex < src.index -> {
+                notifyMove(notifyData)
+                return
             }
             else -> {
-                if (amount > 0) {
-                    leaf.amount++
-                } else {
-                    leaves.add(
-                        li + 1,
-                        HiddenLeaf(toPosition + 1, leaf.local + 1, leaf.amount)
-                    )
-                    leaf.amount = toPosition - leaf.local
-                    adjustNodeSize(ni)
+                src.index--
+                src.position--
+            }
+        }
+        var dst = src
+        if (fromIndex < toIndex) {
+            val topIndex = toIndex + 1
+            while (i < table.lastIndex) {
+                dst = table[++i]
+                if (dst.index > topIndex) {
+                    dst = table[--i]
+                    break
+                }
+                dst.index--
+                dst.position -= moveShown
+            }
+        } else {
+            while (i > 0) {
+                dst.index++
+                dst.position += moveShown
+                dst = table[--i]
+                if (dst.index <= toIndex) {
+                    break
                 }
             }
         }
-    }
-
-
-    internal val hiddenItems = RecyclerList { HiddenMeta(0, 0, 0) }
-
-    private var lastEventType = EventType.None
-    private var lastEventPos = 0
-    private var lastEventCount = 0
-    private val removeEvents = RecyclerList { RemoveEvent(0, 0, 0) }
-
-    override fun hide(position: Int, count: Int) {
-        check(position >= 0)
-        check(count > 0)
-        hideItems(position, count, Int.MAX_VALUE, arrayOf(0, indexOfMeta(position)))
-        { pos, cnt -> doRemovedEvent(requireShownPos(pos), cnt) }
-        dispatchLastEvent()
-    }
-
-    override fun isHidden(index: Int) = getShownPos(index) == -1
-
-    override fun show(position: Int, count: Int) {
-        check(position >= 0)
-        check(count > 0)
-        if (hiddenItems.size == 0) {
-            return
+        if (moveShown == 0) {
+            dst = obtainClosestBucket(dst, i, toIndex, 1)
+            dst.insertEntries(toIndex, 1, false)
+        } else {
+            dst.insertEntries(toIndex, 1, true)
         }
-        showItems(position, count, Int.MAX_VALUE, arrayOf(0, indexOfMeta(position)))
-        dispatchLastEvent()
+        splitBigBucket(dst)
+        removeEmptyBucket(src)
+        if (moveShown != 0) {
+            notifyMove(notifyData)
+        }
     }
+
+    // события
 
     override fun onInserted(position: Int, count: Int) {
-        insertItems(position, count)
-        dispatchLastEvent()
+        insert(position, count, true)
     }
 
     override fun onRemoved(position: Int, count: Int) {
-        removeItems(position, count)
-        dispatchLastEvent()
+        remove(position, count)
     }
 
     override fun onMoved(fromPosition: Int, toPosition: Int) {
-        moveItems(fromPosition, toPosition)
-        callback?.let {
-            val shownFrom = requireShownPos(fromPosition)
-            val shownTo = requireShownPos(toPosition)
-            if (shownFrom != shownTo) it.onMoved(shownFrom, shownTo)
-        }
+        move(fromPosition, toPosition)
     }
 
     override fun onChanged(position: Int, count: Int, payload: Any?) {
-        callback?.let {
-            val shownPos = requireShownPos(position)
-            val shownCnt = requireShownPos(position + count) - shownPos
-            if (shownCnt > 0) it.onChanged(shownPos, shownCnt, payload)
-        }
+        notifyChange(position, count)
     }
 
-    fun getShownPos(position: Int): Int {
-        val meta = metaByRawPos(position) ?: return position
-        val result = position - meta.amount
-        return if (result < meta.local) -1 else result
-    }
+    /**
+     * Получить ближайшую видимую позицию элемента по индексу
+     *
+     * @param index Индекс элемента
+     * @return Ближайшая возможная позиция элемента
+     */
+    private fun closestPosition(index: Int): Int =
+        getBucket { it.index - index }?.run {
+            val localIndex = index - this.index
+            (getEntry(entries) { it.index - localIndex }?.let { entry ->
+                (localIndex - entry.hidden).coerceAtLeast(entry.position)
+            } ?: localIndex) + position
+        } ?: index
 
-    fun getRawPos(position: Int): Int {
-        val meta = metaByShownPos(position) ?: return position
-        return position + meta.amount
-    }
-
-    fun batchHide(list: List<Pair<Int, Int>>) {
-        check(list.isNotEmpty())
-        removeEvents.clear()
-        var i = 0
-        var position = list[i].first
-        val params = arrayOf(0, indexOfMeta(position))
-        do {
-            val count = list[i++].second
-            val nextPos = if (i < list.size) list[i].first else Int.MAX_VALUE
-            check(nextPos > position + count)
-            hideItems(position, count, nextPos, params) { pos, cnt ->
-                removeEvents.alloc {
-                    this.position = pos
-                    this.count = cnt
-                    this.amount = params[0]
-                }
+    /**
+     * Отправить уведомление об удалении элементов
+     *
+     * @param notify Данные удаляемого диапазона
+     */
+    private fun notifyRemove(notify: NotifyData) {
+        listener?.let {
+            if (notify.x < notify.y) {
+                it.onRemoved(notify.x, notify.y - notify.x)
             }
-            position = nextPos
-        } while (position < Int.MAX_VALUE)
-        for (j in removeEvents.lastIndex downTo 0) removeEvents[j].let {
-            doRemovedEvent(requireShownPos(it.position) + it.amount, it.count)
         }
-        dispatchLastEvent()
     }
 
-    fun batchShow(list: List<Pair<Int, Int>>) {
-        check(list.isNotEmpty())
-        var i = 0
-        var position = list[i].first
-        val params = arrayOf(0, indexOfMeta(position))
-        do {
-            val count = list[i++].second
-            val nextPos = if (i < list.size) list[i].first else Int.MAX_VALUE
-            check(nextPos > position + count)
-            showItems(position, count, nextPos, params)
-            position = nextPos
-        } while (position < Int.MAX_VALUE)
-        dispatchLastEvent()
+    /**
+     * Отправить уведомление о вставке элементов
+     *
+     * @param notify Данные вставляемого диапазона
+     */
+    private fun notifyInsert(notify: NotifyData) {
+        listener?.let {
+            if (notify.x < notify.y) {
+                it.onInserted(notify.x, notify.y - notify.x)
+            }
+        }
     }
 
-    fun clear() {
-        hiddenNodes.clear()
-        hiddenItems.clear()
+    /**
+     * Отправить уведомление о перемещении элементов
+     *
+     * @param notify Данные перемещения элемента
+     */
+    private fun notifyMove(notify: NotifyData) {
+        listener?.let {
+            if (notify.x != notify.y) {
+                it.onMoved(notify.x, notify.y)
+            }
+        }
     }
 
-    private fun hideItems(
-        position: Int,
+    /**
+     * Отправить уведомление об изменении элементов
+     *
+     * @param fromIndex Индекс первого элемента изменяемого диапазона
+     * @param count Количество изменяемых элементов
+     */
+    private fun notifyChange(fromIndex: Int, count: Int) {
+        listener?.let {
+            val position = closestPosition(fromIndex)
+            val topPosition = closestPosition(position + count)
+            if (position < topPosition) {
+                it.onChanged(position, topPosition - position, null)
+            }
+        }
+    }
+
+    /**
+     * Скрыть элементы
+     *
+     * В список диапазонов скрытых элементов добавляется новая запись.
+     *
+     * @param entries Список диапазонов скрытых элементов
+     * @param startIndex Индекс элемента
+     * @param count Количество скрываемых элементов
+     * @param notify Коллбэк
+     * @return Количество новых скрытых элементов
+     */
+    private fun internalHide(
+        entries: MutableList<Entry>,
+        startIndex: Int,
         count: Int,
-        stopPos: Int,
-        params: Array<Int>,
-        eventCallback: (Int, Int) -> Unit
+        notify: (Int, Int) -> Unit
+    ): Int {
+        notify(startIndex, count)
+        var startEntry: Entry
+        val stopIndex = startIndex + count
+        var delta = count
+        var i = entries.binarySearch { it.index - startIndex }
+        if (i < 0) {
+            i = -i - 1
+            if (i > 0) {
+                startEntry = entries[i - 1]
+                val top = startEntry.position + startEntry.hidden
+                if (startIndex <= top) {
+                    delta = stopIndex - top
+                    if (delta <= 0) {
+                        return 0
+                    }
+                    startEntry.hidden += delta
+                } else {
+                    startEntry =
+                        Entry(startIndex, startIndex, delta).shiftPosition(-startEntry.hidden)
+                    entries.add(i++, startEntry)
+                }
+            } else {
+                startEntry = Entry(startIndex, startIndex, count)
+                entries.add(i++, startEntry)
+            }
+        } else {
+            startEntry = entries[i++]
+            delta = stopIndex - startEntry.position - startEntry.hidden
+            if (delta <= 0) {
+                return 0
+            }
+            startEntry.hidden += delta
+        }
+        while (i < entries.size) {
+            val entry = entries[i]
+            if (entry.index > stopIndex) {
+                entries.forEachRemaining(i) { shiftPosition(-delta) }
+                break
+            }
+            val top = entry.position + entry.hidden
+            if (top > stopIndex) {
+                startEntry.hidden += top - stopIndex
+            }
+            delta = startEntry.hidden - entry.hidden
+            entries.removeAt(i)
+        }
+        return delta
+    }
+
+    /**
+     * Показать элементы
+     *
+     * В списоке диапазонов скрытых элементов убираются записи для показываемых элементоа
+     *
+     * @param entries Список диапазонов скрытых элементов
+     * @param startIndex Индекс элемента
+     * @param count Количество показываемых элементов
+     * @param notify Коллбэк
+     * @return Количество новых показанных элементов
+     */
+    private fun internalShow(
+        entries: MutableList<Entry>,
+        startIndex: Int,
+        count: Int,
+        notify: (Int, Int) -> Unit
+    ): Int {
+        val stopIndex = startIndex + count
+        var delta = 0
+        var i = entries.binarySearch { it.index - startIndex }
+        if (i < 0) {
+            i = -i - 1
+            if (i > 0) {
+                entries[i - 1].apply {
+                    val top = position + hidden
+                    if (startIndex < top) {
+                        delta = top - startIndex
+                        hidden -= delta
+                        if (stopIndex < top) {
+                            entries.add(
+                                i++,
+                                Entry(stopIndex, stopIndex - hidden, top - stopIndex + hidden)
+                            )
+                            delta = count
+                        }
+                        notify(startIndex, delta)
+                    }
+                }
+            }
+        } else {
+            entries[i].apply {
+                val top = position + hidden
+                if (stopIndex < top) {
+                    delta = count
+                    index = stopIndex
+                    shiftPosition(delta)
+                    i++
+                } else {
+                    entries.removeAt(i)
+                    delta = top - startIndex
+                }
+                notify(startIndex, delta)
+            }
+        }
+        while (i < entries.size) {
+            val entry = entries[i]
+            if (entry.index >= stopIndex) {
+                entries.forEachRemaining(i) { shiftPosition(delta) }
+                break
+            }
+            val top = entry.position + entry.hidden
+            val saveIndex = entry.index
+            val shown: Int
+            if (top > stopIndex) {
+                shown = stopIndex - saveIndex
+                delta += shown
+                entry.index = stopIndex
+                entry.shiftPosition(delta)
+                i++
+            } else {
+                shown = top - saveIndex
+                delta += shown
+                entries.removeAt(i)
+            }
+            notify(saveIndex, shown)
+        }
+        return delta
+    }
+
+    /**
+     * Вставить элементы
+     *
+     * @param entries Список диапазонов скрытых элементов
+     * @param startIndex Начальный индекс элемента
+     * @param count Количество вставляемых элементов
+     * @param visible Признак видимости вставляемых элементов
+     */
+    private fun internalInsert(
+        entries: MutableList<Entry>,
+        startIndex: Int,
+        count: Int,
+        visible: Boolean
     ) {
-        val endPos = position + count
-        val amount = params[0]
-        var i = params[1]
-        var hidden = count
-        var meta: HiddenMeta
-        var topPos: Int
-        if (i < 0) {
-            i = -i - 1
-            if (i > 0) {
-                meta = hiddenItems[i - 1]
-                topPos = meta.local + meta.amount
-                if (position <= topPos) {
-                    hidden = endPos - topPos
-                    if (hidden <= 0) {
-                        hidden = 0
-                    } else {
-                        meta.amount += hidden
-                    }
-                } else {
-                    meta = allocMeta(
-                        i++,
-                        position,
-                        position - meta.amount,
-                        hidden + meta.amount
-                    )
-                }
-            } else {
-                meta = allocMeta(i++, position, position, hidden)
-            }
-        } else {
-            meta = hiddenItems[i++]
-            topPos = meta.local + meta.amount
-            hidden = endPos - topPos
-            if (hidden <= 0) {
-                hidden = 0
-            } else {
-                meta.amount += hidden
-            }
-        }
-        hidden += amount
-        var next: HiddenMeta
-        while (i < hiddenItems.size) {
-            next = hiddenItems[i]
-            if (next.global > endPos) {
-                do {
-                    next = hiddenItems[i]
-                    if (next.global >= stopPos) {
-                        if (next.global == stopPos) {
-                            next.local -= hidden
-                            next.amount += hidden
-                            i = -i - 1
-                        }
-                        break
-                    }
-                    next.local -= hidden
-                    next.amount += hidden
-                    i++
-                } while (i < hiddenItems.size)
-                break
-            }
-            topPos = next.local + next.amount
-            if (topPos > endPos) {
-                meta.amount += topPos - endPos
-            }
-            hidden = meta.amount - next.amount
-            releaseMeta(i)
-        }
-        eventCallback(position, hidden - params[0])
-        params[0] = hidden
-        params[1] = -i - 1
-    }
-
-    private fun showItems(position: Int, count: Int, nextPos: Int, params: Array<Int>) {
-        val endPos = position + count
-        var amount = params[0]
-        var i = params[1]
-        var shown = 0
-        val meta: HiddenMeta
-        var topPos: Int
-        if (i < 0) {
-            i = -i - 1
-            if (i > 0) {
-                val prev = hiddenItems[i - 1]
-                topPos = prev.local + prev.amount
-                if (position < topPos) {
-                    shown = topPos - position
-                    prev.amount -= shown
-                    if (topPos > endPos) {
-                        shown = endPos - position
-                        allocMeta(
-                            i++,
-                            endPos,
-                            endPos - prev.amount,
-                            topPos - endPos + prev.amount
-                        )
-                    }
-                    notifyInserted(position, shown)
-                }
-            }
-        } else {
-            meta = hiddenItems[i]
-            topPos = meta.local + meta.amount
-            if (topPos > endPos) {
-                shown = endPos - position
-                meta.global = endPos
-                meta.local += shown
-                meta.amount -= shown
-                i++
-            } else {
-                shown = topPos - position
-                releaseMeta(i)
-            }
-            notifyInserted(position, shown)
-        }
-        var next: HiddenMeta
-        var savePos: Int
-        amount += shown
-        while (i < hiddenItems.size) {
-            next = hiddenItems[i]
-            if (next.global >= endPos) {
-                do {
-                    next = hiddenItems[i]
-                    if (next.global >= nextPos) {
-                        if (next.global == nextPos) {
-                            next.local += amount
-                            next.amount -= amount
-                            i = -i - 1
-                        }
-                        break
-                    }
-                    next.local += amount
-                    next.amount -= amount
-                    i++
-                } while (i < hiddenItems.size)
-                break
-            }
-            savePos = next.global
-            topPos = next.local + next.amount
-            if (topPos > endPos) {
-                shown = endPos - next.global
-                amount += shown
-                next.global = endPos
-                next.local += amount
-                next.amount -= amount
-                i++
-            } else {
-                shown = topPos - next.global
-                amount += shown
-                releaseMeta(i)
-            }
-            notifyInserted(savePos, shown)
-        }
-        params[0] = amount
-        params[1] = -i - 1
-    }
-
-    internal fun insertItems(position: Int, count: Int, hide: Boolean = false) {
-        check(position >= 0)
-        check(count > 0)
-        if (hiddenItems.size == 0 && !hide) {
-            notifyInserted(position, count)
-            return
-        }
-        val endPos = position + count
-        var i = indexOfMeta(position)
-        var meta: HiddenMeta
-        if (hide) {
+        val stopIndex = startIndex + count
+        var i = entries.binarySearch { it.index - startIndex }
+        if (visible) {
             if (i < 0) {
                 i = -i - 1
                 if (i > 0) {
-                    meta = hiddenItems[i - 1]
-                    if (meta.local + meta.amount < position) {
-                        allocMeta(
-                            i++,
-                            position,
-                            position - meta.amount,
-                            meta.amount + count
-                        )
-                    } else {
-                        meta.amount += count
+                    entries[i - 1].apply {
+                        val moved = position + hidden - startIndex
+                        if (moved > 0) {
+                            hidden -= moved
+                            entries.add(
+                                i++,
+                                Entry(stopIndex, stopIndex - hidden, hidden + moved)
+                            )
+                        }
                     }
-                } else {
-                    allocMeta(i++, position, position, count)
                 }
-            } else {
-                meta = hiddenItems[i++]
-                meta.amount += count
             }
-            while (i < hiddenItems.size) {
-                meta = hiddenItems[i++]
-                meta.global += count
-                meta.amount += count
-            }
+            entries.forEachRemaining(i) { shiftIndex(count, 0) }
         } else {
             if (i < 0) {
                 i = -i - 1
                 if (i > 0) {
-                    meta = hiddenItems[i - 1]
-                    val left = meta.local + meta.amount - position
-                    if (left > 0) {
-                        meta.amount -= left
-                        allocMeta(
-                            i++,
-                            endPos,
-                            endPos - meta.amount,
-                            meta.amount + left
-                        )
+                    entries[--i].apply {
+                        if (position + hidden < startIndex) {
+                            entries.add(
+                                ++i,
+                                Entry(startIndex, startIndex - hidden, count + hidden)
+                            )
+                        } else {
+                            hidden += count
+                        }
                     }
+                } else {
+                    entries.add(i, Entry(startIndex, startIndex, count))
                 }
+            } else {
+                entries[i].hidden += count
             }
-            while (i < hiddenItems.size) {
-                meta = hiddenItems[i++]
-                meta.global += count
-                meta.local += count
-            }
-            notifyInserted(position, count)
+            entries.forEachRemaining(i + 1) { shiftIndex(count, count) }
         }
     }
 
-    internal fun removeItems(position: Int, count: Int) {
-        check(position >= 0)
-        check(count > 0)
-        if (hiddenItems.size == 0) {
-            notifyRemoved(position, count)
-            return
-        }
-        val endPos = position + count
-        var i = indexOfMeta(position)
-        var meta: HiddenMeta? = null
-        var hidden = 0
-        var topPos: Int
-        notifyRemoved(position, count)
+    /**
+     * Удалить элементы
+     *
+     * @param entries Список диапазонов скрытых элементов
+     * @param startIndex Начальный индекс элемента
+     * @param count Количество удаляемых элементов
+     * @return Количество удаленных скрытых элементов
+     */
+    private fun internalRemove(entries: MutableList<Entry>, startIndex: Int, count: Int): Int {
+        val stopIndex = startIndex + count
+        var delta = 0
+        var i = entries.binarySearch { it.index - startIndex }
+        var startEntry: Entry? = null
         if (i < 0) {
             i = -i - 1
             if (i > 0) {
-                meta = hiddenItems[i - 1]
-                topPos = meta.local + meta.amount
-                if (topPos >= position) {
-                    hidden = if (topPos < endPos) topPos - position else count
-                    meta.amount -= hidden
-                } else {
-                    meta = null
+                entries[i - 1].apply {
+                    val removed = position + hidden - startIndex
+                    if (removed >= 0) {
+                        delta = removed.coerceAtMost(count)
+                        startEntry = this.also { hidden -= delta }
+                    }
                 }
             }
         }
-        var next: HiddenMeta
-        while (i < hiddenItems.size) {
-            next = hiddenItems[i]
-            if (next.global > endPos) {
-                do {
-                    next = hiddenItems[i]
-                    next.global -= count
-                    next.local -= count
-                    next.local += hidden
-                    next.amount -= hidden
-                    i++
-                } while (i < hiddenItems.size)
+        while (i < entries.size) {
+            val entry = entries[i]
+            if (entry.index > stopIndex) {
+                entries.forEachRemaining(i) { shiftIndex(-count, -delta) }
                 break
             }
-            topPos = next.local + next.amount
-            if (topPos > endPos) {
-                hidden += endPos - next.global
-                if (meta != null) {
-                    meta.amount += topPos - endPos
-                    releaseMeta(i)
+            val top = entry.position + entry.hidden
+            if (top > stopIndex) {
+                delta += stopIndex - entry.index
+                if (startEntry != null) {
+                    startEntry!!.hidden += top - stopIndex
+                    entries.removeAt(i)
                 } else {
-                    next.global = position
-                    next.local -= count - hidden
-                    next.amount -= hidden
+                    entry.index = startIndex
+                    entry.position -= count
+                    entry.shiftPosition(delta)
                     i++
                 }
             } else {
-                hidden += topPos - next.global
-                releaseMeta(i)
+                delta += top - entry.index
+                entries.removeAt(i)
             }
         }
+        return delta
     }
 
-    internal fun moveItems(fromPosition: Int, toPosition: Int) {
-        check(fromPosition >= 0)
-        check(toPosition >= 0)
-        if (hiddenItems.size == 0 || fromPosition == toPosition) {
-            return
-        }
+    /**
+     * Переместить элементы
+     *
+     * @param entries Список диапазонов скрытых элементов
+     * @param fromIndex Индекс перемещаемого элемента
+     * @param toIndex Новый индекс элемента
+     * @return 0 - если переместили видимый элемент
+     */
+    private fun internalMove(entries: MutableList<Entry>, fromIndex: Int, toIndex: Int): Int {
+        var delta = 0
         // ищем fromIndex + 1 чтобы сразу учесть краевой случай,
-        // когда удаляется строка, предшествующая скрытой группе
-        var i = indexOfMeta(fromPosition + 1)
-        var meta: HiddenMeta
-        var hidden = 0
-        var topPos: Int
+        // когда удаляется элемент между двух скрытых групп.
+        // (при i>0, i будет указывать на следующую группу, а i-1 на предыдущую)
+        val searchIndex = fromIndex + 1
+        var i = entries.binarySearch { it.index - searchIndex }
         if (i < 0) {
             i = -i - 1
             if (i > 0) {
-                meta = hiddenItems[i - 1]
-                topPos = meta.local + meta.amount
-                if (topPos > fromPosition) {
-                    hidden++
-                    if (topPos - 1 == meta.global) {
-                        releaseMeta(--i)
-                    } else {
-                        meta.amount--
+                entries[i - 1].apply {
+                    val top = position + hidden
+                    if (fromIndex < top) {
+                        delta++
+                        if (top - index == 1) {
+                            // случай, когда переносим единственную скрытую группу
+                            if (entries.size == 1) {
+                                index = toIndex
+                                position = toIndex
+                                return delta
+                            }
+                            entries.removeAt(--i)
+                        } else {
+                            hidden--
+                        }
                     }
                 }
             }
         } else if (i > 0) {
-            meta = hiddenItems[i - 1]
-            if (meta.local + meta.amount == fromPosition) {
-                meta.amount = hiddenItems[i].amount
-                releaseMeta(i)
+            entries[i - 1].apply {
+                if (position + hidden == fromIndex) {
+                    hidden = entries.removeAt(i).hidden
+                }
             }
         }
-        val local = 1 - hidden
-        if (fromPosition < toPosition) {
-            while (i < hiddenItems.size) {
-                meta = hiddenItems[i]
-                if (meta.global > toPosition) {
-                    if (meta.global == toPosition + 1) {
-                        meta.global -= hidden
-                        return
+        // delta = 1, если перемещаемый элемент скрыт
+        if (fromIndex < toIndex) {
+            while (i < entries.size) {
+                val entry = entries[i]
+                if (entry.index > toIndex) {
+                    // случай, когда вставка перед скрытой группой
+                    if (entry.index == toIndex + 1) {
+                        entry.index -= delta
+                        return delta
                     }
                     break
                 }
-                meta.global--
-                meta.local -= local
-                meta.amount -= hidden
                 i++
+                entry.shiftIndex(-1, -delta)
             }
-            if (i != 0) {
+            if (i > 0) {
                 i--
             }
         } else {
             while (i > 0) {
-                meta = hiddenItems[--i]
-                if (meta.global <= toPosition) {
-                    if (meta.global == toPosition) {
-                        meta.global += local
-                        meta.local += local
-                        meta.amount += hidden
-                        return
+                val entry = entries[--i]
+                if (entry.index <= toIndex) {
+                    // случай, когда вставка перед скрытой группой
+                    if (entry.index == toIndex) {
+                        entry.index += 1 - delta
+                        entry.position += 1 - delta
+                        entry.hidden += delta
+                        return delta
                     }
                     break
                 }
-                meta.global++
-                meta.local += local
-                meta.amount += hidden
+                entry.shiftIndex(1, delta)
             }
         }
-        meta = hiddenItems[i]
-        topPos = meta.local + meta.amount
-        when {
-            // случай, когда toIndex < fromIndex и < первой скрытой группы
-            // или переносим первую скрытую группу размером 1 (удалили выше)
-            toPosition < meta.global -> {
-                if (hidden > 0) {
-                    allocMeta(0, toPosition, toPosition, 1)
+        // вставим удаленный элемент
+        // i указывает на первую скрытую группу, следующую за toIndex по направлению сдвига
+        entries[i].apply {
+            val top = position + hidden
+            when {
+                // случай, когда toIndex < fromIndex и < первой скрытой группы
+                toIndex < index -> if (delta != 0) {
+                    entries.add(0, Entry(toIndex, toIndex, 1))
                 }
-            }
-            toPosition > topPos -> {
-                if (hidden > 0) {
-                    allocMeta(i + 1, toPosition, toPosition - meta.amount, meta.amount + 1)
+                // случай, когда вставка скрытой группы между видимыми группами,
+                // ситуации вставки перед скрытой группой обрабатываются выше
+                toIndex > top -> if (delta != 0) {
+                    entries.add(i + 1, Entry(toIndex, toIndex - hidden, hidden + 1))
                 }
-            }
-            toPosition == topPos -> {
-                if (hidden > 0) {
-                    meta.amount++
+                // случай, когда вставка скрытой группы внутрь или сразу после скрытой группы
+                delta != 0 -> {
+                    hidden++
                 }
-            }
-            else -> {
-                if (hidden > 0) {
-                    meta.amount++
-                } else {
-                    allocMeta(i + 1, toPosition + 1, meta.local + 1, meta.amount)
-                    meta.amount = toPosition - meta.local
+                // случай, когда вставка видимой группы внутрь скрытой группы
+                toIndex < top -> {
+                    entries.add(i + 1, Entry(toIndex + 1, position + 1, hidden))
+                    hidden = toIndex - position
                 }
             }
         }
+        return delta
     }
 
-
-    private fun metaByRawPos(position: Int): HiddenMeta? {
-        val i = hiddenItems.binarySearch { it.global - position }
-        return if (i == -1) null else hiddenItems[if (i < 0) -i - 2 else i]
+    /**
+     * Проверить индекс на корректность
+     *
+     * Если индекс < 0 вызывается исключение
+     *
+     * @param index Проверяемый индекс
+     */
+    private fun checkIndex(index: Int) {
+        check(index >= 0) { "Index out of bounds" }
     }
 
-    private fun metaByShownPos(position: Int): HiddenMeta? {
-        val i = hiddenItems.binarySearch { it.local - position }
-        return if (i == -1) null else hiddenItems[if (i < 0) -i - 2 else i]
+    /**
+     * Получть запись по условию
+     *
+     * @param list Список записей
+     * @param comparison Функция проверки условия поиска записи,
+     *  принимает парамером запись, возвращает результат сравнения (-1, 0, 1)
+     * @return Найденная запись, либо null
+     */
+    private fun getEntry(list: List<Entry>, comparison: (Entry) -> Int): Entry? {
+        val i = list.binarySearch(comparison = comparison)
+        return if (i == -1) null else list[if (i < 0) -i - 2 else i]
     }
 
-    private fun indexOfMeta(position: Int, fromIndex: Int = 0) =
-        hiddenItems.binarySearch(fromIndex = fromIndex) { it.global - position }
-
-    private fun allocMeta(index: Int, global: Int, local: Int, amount: Int) =
-        hiddenItems.alloc(index) {
-            this.global = global
-            this.local = local
-            this.amount = amount
-        }
-
-    private fun releaseMeta(index: Int) {
-        hiddenItems.release(index)
+    /**
+     * Получть бакет по условию
+     *
+     * @param comparison Функция проверки условия поиска бакета,
+     *  принимает парамером бакет, возвращает результат сравнения (-1, 0, 1)
+     * @return Найденный бакет, либо null
+     */
+    private fun getBucket(comparison: (Bucket) -> Int): Bucket? {
+        val i = table.binarySearch(comparison = comparison)
+        return if (i == -1) null else table[if (i < 0) -i - 2 else i]
     }
 
-    private fun requireShownPos(position: Int): Int {
-        val node = getNode { it.global - position } ?: return position
-        val leaf = node.getLeaf { it.global - position } ?: return position
-
-        return (position - leaf.amount).coerceAtLeast(leaf.local) - node.amount
-//        val meta = metaByRawPos(position) ?: return position
-//        return (position - meta.amount).coerceAtLeast(meta.local)
-    }
-
-    private fun notifyInserted(position: Int, count: Int) {
-        val shownPos = requireShownPos(position)
-        val shownCnt = requireShownPos(position + count) - shownPos
-        if (shownCnt == 0) {
-            return
-        }
-        if (lastEventType == EventType.Add &&
-            lastEventPos <= shownPos && lastEventPos + lastEventCount >= shownPos
-        ) {
-            lastEventCount = shownPos + shownCnt - lastEventPos
-            return
-        }
-        dispatchLastEvent()
-        lastEventPos = shownPos
-        lastEventCount = shownCnt
-        lastEventType = EventType.Add
-    }
-
-    private fun notifyRemoved(position: Int, count: Int) {
-        val shownPos = requireShownPos(position)
-        val shownCnt = requireShownPos(position + count) - shownPos
-        doRemovedEvent(shownPos, shownCnt)
-    }
-
-    private fun doRemovedEvent(shownPos: Int, shownCnt: Int) {
-        if (shownCnt == 0) {
-            return
-        }
-        val shownEnd = shownPos + shownCnt
-        if (lastEventType == EventType.Remove &&
-            shownPos <= lastEventPos && lastEventPos <= shownEnd
-        ) {
-            lastEventCount = (lastEventPos + lastEventCount).coerceAtLeast(shownEnd) - shownPos
-            lastEventPos = shownPos
-            return
-        }
-        dispatchLastEvent()
-        lastEventPos = shownPos
-        lastEventCount = shownCnt
-        lastEventType = EventType.Remove
-    }
-
-    internal fun dispatchLastEvent() {
-        when (lastEventType) {
-            EventType.Add -> callback?.onInserted(lastEventPos, lastEventCount)
-            EventType.Remove -> callback?.onRemoved(lastEventPos, lastEventCount)
-        }
-        lastEventType = EventType.None
-    }
-
-    internal enum class EventType { None, Add, Remove }
-
-    internal class HiddenMeta(var global: Int, var local: Int, var amount: Int)
-
-    private class RemoveEvent(var position: Int, var count: Int, var amount: Int)
-
-}
-
-class RecyclerList<T>(
-    private val list: MutableList<T> = mutableListOf(),
-    private val creator: () -> T
-) : AbstractList<T>() {
-
-    override var size: Int = list.size
-        private set
-
-    override operator fun get(index: Int): T =
-        if (index < size) list[index] else throw NoSuchElementException(index.toString())
-
-    val items get() = list.subList(0, size)
-
-    fun alloc(i: Int = size, init: T.() -> Unit): T {
-        val item: T
-        if (size < list.size) {
-            item = if (i == size) {
-                list[i]
-            } else {
-                list.removeLast().also { list.add(i, it) }
+    /**
+     * Получить бакет, содержащий элемент с указанным индексом
+     *
+     * Создать первый бакет, или расширить существующий,
+     * чтобы он содержал элемент с указанным индексом
+     *
+     * @param startIndex Индекс элемента, для которого нужен бакет
+     * @return Индекс бакета
+     */
+    private fun requireBucket(startIndex: Int): Int {
+        if (table.isNotEmpty()) {
+            val i = findBucket(startIndex)
+            if (i >= 0) {
+                return i
             }
-            size++
+            table.first().apply {
+                if (entries.size < maxBucketSize) {
+                    moveStart(startIndex)
+                    return 0
+                }
+            }
+        }
+        table.add(0, Bucket(startIndex, startIndex, mutableListOf()))
+        return 0
+    }
+
+    /**
+     * Найти бакет, содержащий элемент с указанным индексом
+     *
+     * @param index Индекс искомого элемента
+     * @return Индекс бакета
+     */
+    private fun findBucket(index: Int): Int {
+        val result = table.binarySearch { it.index - index }
+        return if (result < 0) -result - 2 else result
+    }
+
+    /**
+     * Определить лучший бакет для вставки скрытых элементов
+     *
+     * Если это вставка скрытых элементов и приходится в начало переданного бакета,
+     * при этом новый диапазон будет продолжением скрытых элементов предыдущего бакета,
+     * то вставку делаем сразу в предыдущий бакет.
+     *
+     * @param curr Текущий бакет
+     * @param index Индекс текущего бакета
+     * @param entryIndex Индекс вставляемых элементов
+     * @param count Количество вставляемых элементов
+     * @return Лучший бакет для вставки
+     */
+    private fun obtainClosestBucket(
+        curr: Bucket,
+        index: Int,
+        entryIndex: Int,
+        count: Int
+    ): Bucket {
+        if (curr.index == entryIndex && index > 0) {
+            val prev = table[index - 1]
+            with(prev.entries.last()) {
+                if (prev.index + position + hidden == entryIndex) {
+                    curr.index += count
+                    return prev
+                }
+            }
+        }
+        return curr
+    }
+
+    /**
+     * Объединить смежные записи в разных бакетах
+     *
+     * Если текущий бакет начинается со диапазона скрытых элементов,
+     * продолжающий последний диапазон предыдущего бакета,
+     * то переносим из текущего бакета начальный диапазон в конец предыдущего
+     *
+     * @param index Индекс текущего бакета
+     * @return Индекс текущего бакета после переноса элементов
+     */
+    private fun mergeContiguousEntries(bucketIndex: Int, startIndex: Int, topIndex: Int) {
+        if (bucketIndex > 0 && bucketIndex < table.size) {
+            val curr = table[bucketIndex]
+            val first = curr.entries.first()
+            if (curr.index + first.index == topIndex) {
+                val prev = table[bucketIndex - 1]
+                val tail = prev.entries.last()
+                if (prev.index + tail.position + tail.hidden >= startIndex) {
+                    tail.hidden += curr.moveStart(topIndex + first.hidden)
+                    removeEmptyBucket(curr)
+                }
+            }
+        }
+    }
+
+    /**
+     * Вырезать диапазон элементов
+     *
+     * @param bucketIndex Индекс бакета
+     * @param startIndex Индекс первого элемента диапазона
+     * @param count Количество элементов диапазона
+     * @return Количество удаленных скрытых элементоа
+     */
+    private fun cutEntries(bucketIndex: Int, startIndex: Int, count: Int): Int {
+        val topIndex = startIndex + count
+        var removedHidden = 0
+        while (bucketIndex < table.size) {
+            val curr = table[bucketIndex]
+            if (topIndex < curr.index) {
+                break
+            }
+            val last = curr.entries.last()
+            if (curr.index + last.position + last.hidden > topIndex) {
+                removedHidden += curr.moveStart(topIndex)
+                if (!removeEmptyBucket(curr)) {
+                    // мержим предыдущий диапазон с хвостом
+                    mergeContiguousEntries(bucketIndex, startIndex, topIndex)
+                }
+                break
+            }
+            removedHidden += last.hidden
+            table.removeAt(bucketIndex)
+        }
+        return removedHidden
+    }
+
+    /**
+     * Разделить бакет, если его размер стал слишком большим
+     *
+     * @return Коичество добавленных бакетов
+     */
+    private fun splitBigBucket(bucket: Bucket): Int {
+        bucket.apply {
+            if (entries.size <= maxBucketSize) {
+                return 0
+            }
+            val i = entries.size shr 1
+            var entry = entries[i]
+            val delta = entry.index
+            val hidden = entry.index - entry.position
+            val newBucket =
+                Bucket(index + delta, position + delta - hidden, mutableListOf())
+            table.add(table.indexOf(bucket) + 1, newBucket)
+            while (i < entries.size) {
+                entry = entries.removeAt(i)
+                entry.shiftIndex(-delta, -hidden)
+                newBucket.entries.add(entry)
+            }
+        }
+        return 1
+    }
+
+    /**
+     * Удалить бакет, если он пустой
+     *
+     * @return True если бакет был удален
+     */
+    private fun removeEmptyBucket(bucket: Bucket): Boolean {
+        if (bucket.entries.isNotEmpty()) {
+            return false
+        }
+        return table.remove(bucket)
+    }
+
+    /**
+     * Установить позиции уведомления с перещетом из индексов элементов
+     *
+     * @param notify Данные уведомления
+     * @param x Индекс 1 элемента
+     * @param y Индекс 2 элемента
+     */
+    private fun setNotifyClosest(notify: NotifyData, x: Int, y: Int) {
+        notify.x = closestPosition(x)
+        notify.y = closestPosition(y)
+    }
+
+    /**
+     * Выполнить действие для всех элементов до конца списка
+     *
+     * @param startIndex Начальный индекс
+     * @param action Действие
+     */
+    private inline fun <T> List<T>.forEachRemaining(startIndex: Int, action: T.() -> Unit) {
+        for (i in startIndex until size) action(get(i))
+    }
+
+    /**
+     * Сдвинуть позицию диапазона скрытых элементов
+     *
+     * При сдвиге вниз (-) уменьшаем позицию, и увеличиваем количество скрытых
+     * При сдвиге вверх (+) увеличиваем позицию, и уменьшаем количество скрытых
+     *
+     * @param delta Величина свдига
+     * @return Запись диапазона скрытых элементов
+     */
+    private fun Entry.shiftPosition(delta: Int): Entry {
+        position += delta
+        hidden -= delta
+        return this
+    }
+
+    /**
+     * Сдвинуть индекс диапазона скрытых элементов
+     *
+     * При сдвиге вниз (-) уменьшаем индекс и позицию, и увеличиваем количество скрытых
+     * При сдвиге вверх (+) увеличиваем индекс и позицию, и уменьшаем количество скрытых
+     *
+     * @param delta Величина свдига
+     * @param deltaHidden Количество пропускаемых скрытых элементов
+     * @return Запись диапазона скрытых элементов
+     */
+    private fun Entry.shiftIndex(delta: Int, deltaHidden: Int): Entry {
+        index += delta
+        position += delta - deltaHidden
+        hidden += deltaHidden
+        return this
+    }
+
+    /**
+     * Получить позицию элемента по индексу в пределах бакета
+     *
+     * @param index Индекс элемента
+     * @return Позиция элемента или значение HIDDEN_ITEM, если элемент скрыт
+     */
+    private fun Bucket.positionByIndex(index: Int): Int =
+        getEntry(entries) { it.index - index }?.let { entry ->
+            val pos = index - entry.hidden
+            if (pos < entry.position) HIDDEN_ITEM else pos
+        } ?: index
+
+    /**
+     * Получить индекс элемента по позиции в пределах бакета
+     *
+     * @param position Позиция элемента
+     * @return Индекс элемента
+     */
+    private fun Bucket.indexByPosition(position: Int): Int =
+        position + (getEntry(entries) { it.position - position }?.hidden ?: 0)
+
+    /**
+     * Скрыть элементы в пределах бакета
+     *
+     * Обертка над функцией скрытия элементов
+     *
+     * @param startIndex Индекс элемента
+     * @param count Количество скрываемых элементов
+     * @return Количество новых скрытых элементов
+     */
+    private fun Bucket.hideEntries(startIndex: Int, count: Int): Int =
+        internalHide(entries, startIndex - index, count) { _, _ -> }
+
+    /**
+     * Показать элементы в пределах бакета
+     *
+     * Обертка над функцией показа элементов
+     *
+     * @param startIndex Индекс элемента
+     * @param count Количество показываемых элементов
+     * @param notify Коллбэк
+     * @return Количество новых показанных элементов
+     */
+    private fun Bucket.showEntries(
+        startIndex: Int,
+        count: Int,
+        notify: (Int, Int) -> Unit
+    ): Int {
+        val offset = (index - startIndex).coerceAtLeast(0)
+        return internalShow(
+            entries, startIndex - index + offset, count - offset
+        ) { i, c -> notify(i + index, c) }
+    }
+
+    /**
+     * Удалить элементы в пределах бакета
+     *
+     * Обертка над функцией удаления элементов
+     *
+     * @param startIndex Индекс элемента
+     * @param count Количество удаляемых элементов
+     * @return Количество удаленных скрытых элементов
+     */
+    private fun Bucket.removeEntries(startIndex: Int, count: Int): Int {
+        return internalRemove(entries, startIndex - index, count)
+    }
+
+    /**
+     * Вставить элементы в пределах бакета
+     *
+     * Обертка над функцией вставки элементов
+     *
+     * @param startIndex Начальный индекс элемента
+     * @param count Количество вставляемых элементов
+     * @param visible Признак видимости вставляемых элементов
+     */
+    private fun Bucket.insertEntries(startIndex: Int, count: Int, visible: Boolean) {
+        if (startIndex < index) {
+            if (visible) {
+                index += count
+                position += count
+                return
+            }
+            moveStart(startIndex)
+        }
+        internalInsert(entries, startIndex - index, count, visible)
+    }
+
+    /**
+     * Переместить элемент в пределах бакета
+     *
+     * Обертка над функцией перемещения элементов
+     *
+     * @param fromIndex Начальный индекс элемента
+     * @param toIndex Конечный индекс элемента
+     * @return 0 - если переместили видимый элемент
+     */
+    private fun Bucket.moveEntry(fromIndex: Int, toIndex: Int): Int {
+        return internalMove(entries, fromIndex - index, toIndex - index)
+    }
+
+    /**
+     * Сдвинуть начало бакета на новый индекс
+     *
+     * @param newIndex Новый индекс
+     * @return Количество удаленных скрытых элементов
+     */
+    private fun Bucket.moveStart(newIndex: Int): Int {
+        var hidden = 0
+        val offset = newIndex - index
+        if (offset > 0) {
+            hidden = internalRemove(entries, 0, offset)
         } else {
-            item = creator().also { list.add(i, it) }
-            size = list.size
+            entries.forEach { it.shiftIndex(-offset, 0) }
         }
-        return item.apply { init(item) }
+        index = newIndex
+        position += offset - hidden
+        return hidden
     }
 
-    override fun clear() {
-        size = 0
-    }
-
-    fun release(i: Int) {
-        size--
-        if (i < size) {
-            list.removeAt(i).also { list.add(it) }
-        }
-    }
-
-}
-
-open class HidingList<T> private constructor(
-    private val hidingItems: HidingItemsAdapter
-) : AbstractList<T>(), HidingItems by hidingItems {
-
-    private var items: List<T> = emptyList()
-    private var differ: AsyncListDiffer<T>? = null
-    private val list get() = differ?.currentList ?: items
-
-    constructor(
-        diffCallback: DiffUtil.ItemCallback<T>? = null,
-        list: List<T>? = null,
-        listUpdateCallback: ListUpdateCallback? = null
-    ) : this(
-        HidingItemsAdapter(listUpdateCallback)
-    ) {
-        if (diffCallback != null) {
-            differ =
-                AsyncListDiffer<T>(hidingItems, AsyncDifferConfig.Builder(diffCallback).build())
-        }
-        submitList(list)
-    }
-
-    // list
-    override val size get() = hidingItems.getShownPos(list.size)
-
-    override fun get(index: Int): T = list[hidingItems.getRawPos(index)]
-
-    // hiding
-
-    // differ
-    fun submitList(newList: List<T>?) {
-        differ?.submitList(newList) ?: run {
-            items = newList?.let { Collections.unmodifiableList(it) } ?: emptyList()
-            hidingItems.clear()
-        }
+    /**
+     * Присоединить элементы другого бакета
+     *
+     * @param other Бакет, диапазоны которого присоединяются
+     */
+    private fun Bucket.join(other: Bucket) {
+        val delta = other.index - index
+        val hidden = entries.last().hidden
+        other.entries.forEach { entries.add(it.shiftIndex(delta, hidden)) }
     }
 
 }

@@ -92,9 +92,9 @@ class MainActivity : AppCompatActivity() {
                 val a = MutableList(12) { false }
                 c.clear()
                 c.hiddenNodes.add(
-                    HidingItemsAdapter.HiddenNode(
+                    HidingItemsAdapter2.HiddenNode(
                         0, 0, 0, mutableListOf(
-                            HidingItemsAdapter.HiddenLeaf(0, 0, 12)
+                            HidingItemsAdapter2.HiddenLeaf(0, 0, 12)
                         )
                     )
                 )
@@ -308,7 +308,7 @@ class MainActivity : AppCompatActivity() {
 
     private var eventStr = ""
 
-    val c = HidingItemsAdapter(object : ListUpdateCallback {
+    val c = HidingItemsAdapter2(object : ListUpdateCallback {
         override fun onInserted(position: Int, count: Int) {
             eventStr += ", add $position $count"
             Log.d(TAG, "onInserted($position, $count)")
@@ -754,7 +754,7 @@ class MainActivity : AppCompatActivity() {
         return s
     }
 
-    fun test(a: MutableList<Boolean>, c: HidingItemsAdapter) {
+    fun test(a: MutableList<Boolean>, c: HidingItemsAdapter2) {
         for (i in 0 until c.hiddenItems.size) {
             val slot = c.hiddenItems[i]
             if (slot.global < 0 || slot.local > slot.global ||
@@ -784,8 +784,8 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, "Ok")
     }
 
-    fun testF(a: MutableList<Boolean>, c: HidingItemsAdapter) {
-        var prev: HidingItemsAdapter.HiddenNode? = null
+    fun testF(a: MutableList<Boolean>, c: HidingItemsAdapter2) {
+        var prev: HidingItemsAdapter2.HiddenNode? = null
         for (node in c.hiddenNodes) {
             if (prev == null || prev.global < node.global && prev.local < node.local) {
                 for (i in 0 until node.leaves.size) {
