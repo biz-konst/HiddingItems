@@ -3,6 +3,9 @@ package bk.app.testapp
 import androidx.recyclerview.widget.ListUpdateCallback
 
 /**
+ * @author Bizyur Konstantin <bkonst2180@gmail.com>
+ * @since 21.12.2021
+ *
  * Адаптер виртуального скрытия элементов в списках
  *
  * Выполняет преобразование индекса элемента в его позицию в списке,
@@ -114,10 +117,10 @@ class HidingItemsAdapter(
      * @param index Индекс элемента
      * @return Позиция элемента, или значение HIDDEN_ITEM
      */
-    fun positionByIndex(index: Int): Int {
+    fun targetPosition(index: Int): Int {
         checkIndex(index)
         return getBucket { it.index - index }?.run {
-            val pos = positionByIndex(index - this.index)
+            val pos = targetPosition(index - this.index)
             if (pos == HIDDEN_ITEM) HIDDEN_ITEM else pos + position
         } ?: index
     }
@@ -132,10 +135,10 @@ class HidingItemsAdapter(
      * @param position Позиция элемента
      * @return Индекс элемента
      */
-    fun indexByPosition(position: Int): Int {
+    fun sourceIndex(position: Int): Int {
         checkIndex(position)
         return getBucket { it.position - position }?.run {
-            indexByPosition(position - this.position) + index
+            sourceIndex(position - this.position) + index
         } ?: position
     }
 
@@ -147,7 +150,7 @@ class HidingItemsAdapter(
      * @param index Индекс элемента
      * @return True если элемент скрыт
      */
-    override fun isHidden(index: Int): Boolean = positionByIndex(index) == HIDDEN_ITEM
+    override fun isHidden(index: Int): Boolean = targetPosition(index) == HIDDEN_ITEM
 
     /**
      * Скрыть элементы
@@ -158,7 +161,7 @@ class HidingItemsAdapter(
     override fun hide(fromIndex: Int, count: Int) {
         checkIndex(fromIndex)
         if (count > 0) {
-            setNotifyClosest(notifyData, fromIndex, fromIndex + count)
+            setNotifyPositions(notifyData, fromIndex, fromIndex + count)
             var i = requireBucket(fromIndex)
             table[i].apply {
                 var addedHidden = hideEntries(fromIndex, count)
@@ -268,7 +271,7 @@ class HidingItemsAdapter(
                 notifyData.set(fromIndex, fromIndex + count)
                 return
             }
-            setNotifyClosest(notifyData, fromIndex, fromIndex + count)
+            setNotifyPositions(notifyData, fromIndex, fromIndex + count)
             var i = findBucket(fromIndex).coerceAtLeast(0)
             var removedHidden = 0
             table[i].apply {
@@ -304,7 +307,7 @@ class HidingItemsAdapter(
             notifyMove(notifyData)
             return
         }
-        setNotifyClosest(notifyData, fromIndex, toIndex)
+        setNotifyPositions(notifyData, fromIndex, toIndex)
         var i = findBucket(fromIndex).coerceAtLeast(0)
         val src = table[i]
         var moveShown = 1
@@ -457,16 +460,13 @@ class HidingItemsAdapter(
      * @param entries Список диапазонов скрытых элементов
      * @param startIndex Индекс элемента
      * @param count Количество скрываемых элементов
-     * @param notify Коллбэк
      * @return Количество новых скрытых элементов
      */
     private fun internalHide(
         entries: MutableList<Entry>,
         startIndex: Int,
-        count: Int,
-        notify: (Int, Int) -> Unit
+        count: Int
     ): Int {
-        notify(startIndex, count)
         var startEntry: Entry
         val stopIndex = startIndex + count
         var delta = count
@@ -888,24 +888,20 @@ class HidingItemsAdapter(
      * то вставку делаем сразу в предыдущий бакет.
      *
      * @param curr Текущий бакет
-     * @param index Индекс текущего бакета
-     * @param entryIndex Индекс вставляемых элементов
+     * @param bucketIndex Индекс текущего бакета
+     * @param index Индекс вставки элементов
      * @param count Количество вставляемых элементов
      * @return Лучший бакет для вставки
      */
     private fun obtainClosestBucket(
-        curr: Bucket,
-        index: Int,
-        entryIndex: Int,
-        count: Int
+        curr: Bucket, bucketIndex: Int, index: Int, count: Int
     ): Bucket {
-        if (curr.index == entryIndex && index > 0) {
-            val prev = table[index - 1]
-            with(prev.entries.last()) {
-                if (prev.index + position + hidden == entryIndex) {
-                    curr.index += count
-                    return prev
-                }
+        if (curr.index == index && bucketIndex > 0) {
+            val prev = table[bucketIndex - 1]
+            val last = prev.entries.last()
+            if (prev.index + last.position + last.hidden == index) {
+                curr.index += count
+                return prev
             }
         }
         return curr
@@ -918,8 +914,9 @@ class HidingItemsAdapter(
      * продолжающий последний диапазон предыдущего бакета,
      * то переносим из текущего бакета начальный диапазон в конец предыдущего
      *
-     * @param index Индекс текущего бакета
-     * @return Индекс текущего бакета после переноса элементов
+     * @param bucketIndex Индекс текущего бакета
+     * @param startIndex Индекс начала текущего диапазона
+     * @param topIndex Индекс конечного элемента
      */
     private fun mergeContiguousEntries(bucketIndex: Int, startIndex: Int, topIndex: Int) {
         if (bucketIndex > 0 && bucketIndex < table.size) {
@@ -1012,7 +1009,7 @@ class HidingItemsAdapter(
      * @param x Индекс 1 элемента
      * @param y Индекс 2 элемента
      */
-    private fun setNotifyClosest(notify: NotifyData, x: Int, y: Int) {
+    private fun setNotifyPositions(notify: NotifyData, x: Int, y: Int) {
         notify.x = closestPosition(x)
         notify.y = closestPosition(y)
     }
@@ -1065,7 +1062,7 @@ class HidingItemsAdapter(
      * @param index Индекс элемента
      * @return Позиция элемента или значение HIDDEN_ITEM, если элемент скрыт
      */
-    private fun Bucket.positionByIndex(index: Int): Int =
+    private fun Bucket.targetPosition(index: Int): Int =
         getEntry(entries) { it.index - index }?.let { entry ->
             val pos = index - entry.hidden
             if (pos < entry.position) HIDDEN_ITEM else pos
@@ -1077,7 +1074,7 @@ class HidingItemsAdapter(
      * @param position Позиция элемента
      * @return Индекс элемента
      */
-    private fun Bucket.indexByPosition(position: Int): Int =
+    private fun Bucket.sourceIndex(position: Int): Int =
         position + (getEntry(entries) { it.position - position }?.hidden ?: 0)
 
     /**
@@ -1090,7 +1087,7 @@ class HidingItemsAdapter(
      * @return Количество новых скрытых элементов
      */
     private fun Bucket.hideEntries(startIndex: Int, count: Int): Int =
-        internalHide(entries, startIndex - index, count) { _, _ -> }
+        internalHide(entries, startIndex - index, count)
 
     /**
      * Показать элементы в пределах бакета

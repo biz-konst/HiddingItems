@@ -112,7 +112,7 @@ class HiddenItemsAdapter {
 
     private fun positionsFromHidden(hidden: HidingItemsAdapter, size: Int): Array<Int> {
         val result = mutableListOf<Int>()
-        repeat(hidden.positionByIndex(size)) { i -> result.add(hidden.indexByPosition(i)) }
+        repeat(hidden.targetPosition(size)) { i -> result.add(hidden.sourceIndex(i)) }
         return result.toTypedArray()
     }
 

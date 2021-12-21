@@ -6,34 +6,94 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListUpdateCallback
 import java.util.*
 
+/**
+ * @author Bizyur Konstantin <bkonst2180@gmail.com>
+ * @since 21.12.2021
+ *
+ * Класс списка с возможностью скрытия/показа элементов
+ */
 @Suppress("MemberVisibilityCanBePrivate")
-open class HidingList<T> internal constructor(private val hidingItems: HidingItemsAdapter) :
+open class HidingList<T> private constructor(private val hidingItems: HidingItemsAdapter) :
     AbstractList<T>(), HidingItems by hidingItems {
 
     private var items = emptyList<T>()
     private var differ: AsyncListDiffer<T>? = null
-    private val list: List<T> get() = differ?.currentList ?: items
+    private val listeners = arrayListOf<AsyncListDiffer.ListListener<T>>()
 
+    val currentList: List<T> get() = differ?.currentList ?: items
+
+    /**
+     * Конструктор класса
+     *
+     * @param listUpdateCallback Слушатель событий изменения списка
+     *  (в т.ч. при скрытии/показе элементов)
+     * @param asyncDiffConfig Конфигурация для DiffUtil
+     * @param items Начальный список элементов
+     * @param maxBucketSize Максимальный размер фрагмента скрытых диапазонов
+     *  (подробнее в описани класса HidingItemsAdapter).
+     */
     constructor(
         listUpdateCallback: ListUpdateCallback? = null,
-        diffCallback: DiffUtil.ItemCallback<T>? = null,
+        asyncDiffConfig: AsyncDifferConfig<T>? = null,
         items: List<T>? = null,
         maxBucketSize: Int = 1024
     ) : this(HidingItemsAdapter(maxBucketSize = maxBucketSize, listener = listUpdateCallback)) {
-        if (diffCallback != null) {
+        if (asyncDiffConfig != null) {
             differ =
-                AsyncListDiffer<T>(hidingItems, AsyncDifferConfig.Builder(diffCallback).build())
+                AsyncListDiffer<T>(hidingItems, asyncDiffConfig)
         }
         submitList(items)
     }
 
     // list
 
-    override fun get(index: Int): T = list[hidingItems.indexByPosition(index)]
+    /**
+     * Получить элемент списка по индексу
+     *
+     * @param index Индекс элемента
+     * @return Элемент списка
+     */
+    override fun get(index: Int): T = currentList[hidingItems.sourceIndex(index)]
 
-    override val size: Int get() = hidingItems.indexByPosition(list.size)
+    override val size: Int get() = hidingItems.sourceIndex(currentList.size)
+
+    // hiding items
+
+    /**
+     * Получить индекс элемента по позиции
+     *
+     * @param position Позиция элемента
+     * @return Индекс элемента
+     */
+    fun sourceIndex(position: Int): Int = hidingItems.sourceIndex(position)
+
+    /**
+     * Получить позицию элемента по индексу
+     *
+     * @param index Индекс элемента
+     * @return Позиция элемента, или значение HIDDEN_ITEM
+     */
+    fun targetPosition(index: Int): Int = hidingItems.targetPosition(index)
 
     // differ
+
+    /**
+     * Добавить слушателя событий изменения списка
+     *
+     * @param listener Слушатель событий изменения списка
+     */
+    fun addListListener(listener: AsyncListDiffer.ListListener<T>) {
+        differ?.addListListener(listener) ?: run { listeners.add(listener) }
+    }
+
+    /**
+     * Удалить слушателя событий изменения списка
+     *
+     * @param listener Слушатель событий изменения списка
+     */
+    fun removeListListener(listener: AsyncListDiffer.ListListener<T>) {
+        differ?.removeListListener(listener) ?: run { listeners.remove(listener) }
+    }
 
     /**
      * Установить новый список в качестве источника элементов
@@ -46,16 +106,28 @@ open class HidingList<T> internal constructor(private val hidingItems: HidingIte
             items = emptyList()
             it.submitList(newList, commitCallback)
         } ?: run {
-            val oldCount = items.size
-            items = newList?.let { Collections.unmodifiableList(it) } ?: emptyList()
-            if (oldCount > 0) {
-                hidingItems.onRemoved(0, oldCount)
+            if (items !== newList) {
+                val oldList = items
+                items = newList?.let { Collections.unmodifiableList(it) } ?: emptyList()
+                if (oldList.isNotEmpty()) {
+                    hidingItems.onRemoved(0, oldList.size)
+                }
+                if (items.isNotEmpty()) {
+                    hidingItems.onInserted(0, items.size)
+                }
+                onCurrentListChanged(oldList)
+                commitCallback?.run()
             }
-            if (items.isNotEmpty()) {
-                hidingItems.onInserted(0, items.size)
-            }
-            commitCallback?.run()
         }
+    }
+
+    /**
+     * Оповестить слушателей об изменении списка
+     *
+     * @param previousList Предыдущий список
+     */
+    private fun onCurrentListChanged(previousList: List<T>) {
+        listeners.forEach { it.onCurrentListChanged(previousList, currentList) }
     }
 
 }
