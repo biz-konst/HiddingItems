@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item
+        android:id="@+id/collapseAll"
+        android:title="@string/collapse_all" />
+    <item
+        android:id="@+id/collapseAllRecursive"
+        android:title="@string/collapse_all_recursive" />
+    <item
+        android:id="@+id/expandAll"
+        android:title="@string/expand_all" />
+    <item
+        android:id="@+id/expandAllRecursive"
+        android:title="@string/expand_all_recursive" />
+</menu>
