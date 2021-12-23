@@ -2,7 +2,6 @@ package bk.hidingitems
 
 import androidx.recyclerview.widget.AsyncDifferConfig
 import androidx.recyclerview.widget.ListUpdateCallback
-import kotlin.math.exp
 
 /**
  * @author Bizyur Konstantin <bkonst2180@gmail.com>
@@ -151,8 +150,8 @@ abstract class ExpandableList<T>(
      * Привести видимость строк списка в соответствие флагам isExpanded
      */
     fun updateExpanded() {
-        var startHide: Int = 0
-        var startShow: Int = 0
+        var startHide = 0
+        var startShow = 0
 
         fun updateChild(index: Int, parentLevel: Int, expanded: Boolean): Int {
             var i = index
