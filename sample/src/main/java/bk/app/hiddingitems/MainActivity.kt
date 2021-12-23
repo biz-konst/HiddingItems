@@ -1,6 +1,7 @@
 package bk.app.hiddingitems
 
 import android.os.Bundle
+import android.os.Parcel
 import android.view.ContextMenu
 import android.view.Menu
 import android.view.MenuItem
@@ -8,6 +9,7 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import bk.app.hiddingitems.databinding.ActivityMainBinding
 import bk.hidingitems.ExpandableItems
+import bk.hidingitems.ExpandableListAdapterSavedState
 
 class MainActivity : AppCompatActivity() {
 
@@ -21,6 +23,13 @@ class MainActivity : AppCompatActivity() {
         adapter = MyExpandableListAdapter()
         binding.itemsList.adapter = adapter
         adapter.submitList(items)
+        savedInstanceState?.getParcelable<ExpandableListAdapterSavedState>(ADAPTER_SAVED_STATE_KEY)
+            ?.restore(adapter)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putParcelable(ADAPTER_SAVED_STATE_KEY, ExpandableListAdapterSavedState(adapter))
+        super.onSaveInstanceState(outState)
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
@@ -39,21 +48,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val ADAPTER_SAVED_STATE_KEY = "MyExpandableListAdapter.state"
+
         val items = listOf(
-            ExpandedListItem(isExpanded = true, expansionLevel = 0, text = "Holder 0"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 1, text = "Holder 1"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 1, text = "Holder 1"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 0, text = "Holder 0"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 1, text = "Holder 1"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 1, text = "Holder 1"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
-            ExpandedListItem(isExpanded = true, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 0, text = "Holder 0"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 1, text = "Holder 1"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 1, text = "Holder 1"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 0, text = "Holder 0"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 1, text = "Holder 1"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 1, text = "Holder 1"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
+            ExpandedListItem(isExpanded = false, expansionLevel = 2, text = "Holder 2"),
         )
     }
 

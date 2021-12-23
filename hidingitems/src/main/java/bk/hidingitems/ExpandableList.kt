@@ -2,6 +2,7 @@ package bk.hidingitems
 
 import androidx.recyclerview.widget.AsyncDifferConfig
 import androidx.recyclerview.widget.ListUpdateCallback
+import kotlin.math.exp
 
 /**
  * @author Bizyur Konstantin <bkonst2180@gmail.com>
@@ -12,16 +13,14 @@ import androidx.recyclerview.widget.ListUpdateCallback
  * @param listUpdateCallback Слушатель событий изменения списка
  * (в т.ч. при скрытии/показе элементов)
  * @param asyncDifferConfig Конфигурация для DiffUtil
- * @param items Начальный список элементов
  * @param maxBucketSize Максимальный размер фрагмента скрытых диапазонов
  * (подробнее в описани класса HidingItemsAdapter).
  */
 abstract class ExpandableList<T>(
     listUpdateCallback: ListUpdateCallback? = null,
     asyncDifferConfig: AsyncDifferConfig<T>? = null,
-    items: List<T>? = null,
     maxBucketSize: Int = 1024
-) : HidingList<T>(listUpdateCallback, asyncDifferConfig, items, maxBucketSize), ExpandableItems {
+) : HidingList<T>(listUpdateCallback, asyncDifferConfig, maxBucketSize), ExpandableItems {
 
     /**
      * Свернуть группу
@@ -145,6 +144,57 @@ abstract class ExpandableList<T>(
             if (getExpansionLevel(index) == ExpandableItems.MIN_LEVEL) {
                 expand(index, expansionLevel)
             }
+        }
+    }
+
+    /**
+     * Привести видимость строк списка в соответствие флагам isExpanded
+     */
+    fun updateExpanded() {
+        var startHide: Int = 0
+        var startShow: Int = 0
+
+        fun updateChild(index: Int, parentLevel: Int, expanded: Boolean): Int {
+            var i = index
+            while (i < currentList.size) {
+                val level = getExpansionLevel(i)
+                if (level <= parentLevel) {
+                    break
+                }
+                val isHidden = isHidden(i)
+                val isExpanded = isExpanded(i)
+                i++
+                if (expanded == isHidden) {
+                    if (expanded) {
+                        if (startHide < startShow) {
+                            hide(startHide, startShow - startHide)
+                        }
+                        startHide = i
+                    } else {
+                        if (startShow < startHide) {
+                            show(startShow, startHide - startShow)
+                        }
+                        startShow = i
+                    }
+                } else {
+                    if (startHide < startShow) {
+                        hide(startHide, startShow - startHide)
+                    } else if (startShow < startHide) {
+                        show(startShow, startHide - startShow)
+                    }
+                    startHide = i
+                    startShow = i
+                }
+                i = updateChild(i, level, isExpanded)
+            }
+            return i
+        }
+
+        updateChild(0, Int.MIN_VALUE, true)
+        if (startHide < startShow) {
+            hide(startHide, startShow - startHide)
+        } else if (startShow < startHide) {
+            show(startShow, startHide - startShow)
         }
     }
 

@@ -12,7 +12,7 @@ import java.util.*
  * Класс списка с возможностью скрытия/показа элементов
  */
 @Suppress("MemberVisibilityCanBePrivate")
-open class HidingList<T> private constructor(private val hidingItems: HidingItemsAdapter) :
+open class HidingList<T> private constructor(private val hidingItems: HidingItemsHelper) :
     AbstractList<T>(), HidingItems by hidingItems {
 
     private var items = emptyList<T>()
@@ -27,18 +27,15 @@ open class HidingList<T> private constructor(private val hidingItems: HidingItem
      * @param listUpdateCallback Слушатель событий изменения списка
      *  (в т.ч. при скрытии/показе элементов)
      * @param asyncDiffConfig Конфигурация для DiffUtil
-     * @param items Начальный список элементов
      * @param maxBucketSize Максимальный размер фрагмента скрытых диапазонов
      *  (подробнее в описани класса HidingItemsAdapter).
      */
     constructor(
         listUpdateCallback: ListUpdateCallback? = null,
         asyncDiffConfig: AsyncDifferConfig<T>? = null,
-        items: List<T>? = null,
         maxBucketSize: Int = 1024
-    ) : this(HidingItemsAdapter(maxBucketSize = maxBucketSize, listener = listUpdateCallback)) {
+    ) : this(HidingItemsHelper(maxBucketSize = maxBucketSize, listener = listUpdateCallback)) {
         asyncDiffConfig?.let { differ = AsyncListDiffer(hidingItems, it) }
-        submitList(items)
     }
 
     // list

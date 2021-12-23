@@ -1,6 +1,5 @@
 package bk.app.hiddingitems
 
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
@@ -49,7 +48,6 @@ class MyExpandableListAdapter :
                 }.apply {
                     itemView.setOnClickListener {
                         val index = adapter.expandedIndex(this.adapterPosition)
-                        Log.d(ViewHolder::class.java.name, "adapterPosition = ${this.adapterPosition}, raw index = $index")
                         if (adapter.isExpanded(index)) {
                             adapter.collapse(index)
                         } else {

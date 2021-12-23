@@ -1,5 +1,7 @@
 package bk.hidingitems
 
+import android.os.Parcel
+import android.os.Parcelable
 import android.view.View
 import androidx.recyclerview.widget.*
 
@@ -35,18 +37,51 @@ abstract class ExpandableListAdapter<T, VH : RecyclerView.ViewHolder>(
         expandableList.expandAll(expansionLevel)
     }
 
+    override fun onCurrentListChanged(previousList: List<T>, currentList: List<T>) {
+        updateExpandedState()
+    }
+
     override fun getItemCount(): Int = expandableList.size
 
-    override fun onCurrentListChanged(previousList: MutableList<T>, currentList: MutableList<T>) {}
-
+    /**
+     * Получить индекс элемента в развернутом списке
+     *
+     * @param position Видимая позиция элемента
+     * @return Индекс элемента в развернутом списке
+     */
     fun expandedIndex(position: Int): Int = expandableList.sourceIndex(position)
 
-    fun expandedItem(index: Int): T = expandableList.currentList[index]
+    /**
+     * Получить элемент по его индексу в развернутом списке
+     *
+     * @param index Индекс элемента в развернутом списке
+     * @return Элемент
+     */
+    fun expandedItem(index: Int): T = currentList[index]
 
-    fun getItem(index: Int): T = expandableList[index]
+    /**
+     * Получить элемент по видимой позиции
+     *
+     * @param position Видимая позиция элемента
+     * @return Элемент
+     */
+    fun getItem(position: Int): T = expandableList[position]
 
+    /**
+     * Установть новый список элементов
+     *
+     * @param newList Новый список элементов
+     * @param commitCallback Обработчик завершения обновления списка
+     */
     fun submitList(newList: List<T>?, commitCallback: Runnable? = null) {
         expandableList.submitList(newList, commitCallback)
+    }
+
+    /**
+     * Установить видимость элементов в соответствие флагам isExpanded
+     */
+    fun updateExpandedState() {
+        expandableList.updateExpanded()
     }
 
     private inner class ExpandableListImpl<T>(

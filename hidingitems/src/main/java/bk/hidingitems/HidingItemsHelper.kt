@@ -23,10 +23,10 @@ import androidx.recyclerview.widget.ListUpdateCallback
  * определяется параметром конструктора maxBucketSize
  */
 @Suppress("MemberVisibilityCanBePrivate")
-class HidingItemsAdapter(
+class HidingItemsHelper(
     private val maxBucketSize: Int = 1024,
     listener: ListUpdateCallback? = null
-) : ListUpdateCallback, HidingItems {
+) : HidingItems, ListUpdateCallback {
 
     @set:JvmName("_setListener")
     var listener: ListUpdateCallback? = listener
@@ -362,8 +362,6 @@ class HidingItemsAdapter(
             notifyMove(notifyData)
         }
     }
-
-    // события
 
     override fun onInserted(position: Int, count: Int) {
         insert(position, count, true)
