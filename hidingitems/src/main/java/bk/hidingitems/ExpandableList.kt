@@ -32,10 +32,7 @@ abstract class ExpandableList<T>(
         if (isExpanded(index) || recursive) {
             setExpanded(index, false)
             var i = index
-            while (++i < currentList.size) {
-                if (getExpansionLevel(i) <= level) {
-                    break
-                }
+            while (++i < currentList.size && getExpansionLevel(i) > level) {
                 if (recursive) {
                     setExpanded(i, false)
                 }
@@ -76,12 +73,7 @@ abstract class ExpandableList<T>(
             var i = index
             if (!parentExpanded) {
                 // если родитель не раскрыт, пропускаем все его элементы
-                while (i < currentList.size) {
-                    if (getExpansionLevel(i) <= parentLevel) {
-                        break
-                    }
-                    i++
-                }
+                while (i < currentList.size && getExpansionLevel(i) > parentLevel) i++
                 if (i > index) {
                     // что-то пропустили, значит нужно показать накопленное...
                     if (firstShown < lastShown) {
@@ -120,6 +112,7 @@ abstract class ExpandableList<T>(
                 level = getExpansionLevel(i)
             }
         }
+
         if (!isExpanded(index) || expansionLevel > getExpansionLevel(index) + 1) {
             setExpanded(index, true)
             firstShown = index + 1
@@ -184,7 +177,7 @@ abstract class ExpandableList<T>(
                     startHide = i
                     startShow = i
                 }
-                i = updateChild(i, level, isExpanded)
+                i = updateChild(i, level, expanded and isExpanded)
             }
             return i
         }

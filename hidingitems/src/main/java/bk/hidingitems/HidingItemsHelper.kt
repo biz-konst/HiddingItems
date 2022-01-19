@@ -54,13 +54,13 @@ class HidingItemsHelper(
 
     private val table = mutableListOf<Bucket>()
 
-    private  class Entry(
+    private class Entry(
         var index: Int,
         var position: Int,
         var hidden: Int
     )
 
-    private  class Bucket(
+    private class Bucket(
         var index: Int,
         var position: Int,
         val entries: MutableList<Entry>
@@ -87,7 +87,7 @@ class HidingItemsHelper(
      */
     fun pack() {
         if (table.isNotEmpty()) {
-            var prev = table.first()
+            var prev = table[0]
             var i = 1
             while (i < table.size) {
                 val curr = table[i]
@@ -198,7 +198,7 @@ class HidingItemsHelper(
             }
             bucket.position += removeHidden
             removeHidden += bucket.showEntries(fromIndex, count) { idx, cnt ->
-                val pos = closestPosition(idx)
+                val pos = nearestVisiblePosition(idx)
                 notifyList.add(NotifyData(pos, pos + cnt))
             }
             if (!removeEmptyBucket(bucket)) {
@@ -228,7 +228,7 @@ class HidingItemsHelper(
         checkIndex(toIndex)
         if (count > 0) {
             if (visible) {
-                notifyData.x = closestPosition(toIndex)
+                notifyData.x = nearestVisiblePosition(toIndex)
                 notifyData.y = notifyData.x + count
                 if (table.isNotEmpty()) {
                     var i = findBucket(toIndex).coerceAtLeast(0)
@@ -246,7 +246,7 @@ class HidingItemsHelper(
                 notifyInsert(notifyData)
             } else {
                 val i = requireBucket(toIndex)
-                obtainClosestBucket(table[i], i, toIndex, count)
+                obtainBestBucket(table[i], i, toIndex, count)
                     .apply {
                         insertEntries(toIndex, count, visible)
                         table.forEachRemaining(i + 1) { index += count }
@@ -267,6 +267,7 @@ class HidingItemsHelper(
         if (count > 0) {
             if (table.isEmpty()) {
                 notifyData.set(fromIndex, fromIndex + count)
+                notifyRemove(notifyData)
                 return
             }
             setNotifyPositions(notifyData, fromIndex, fromIndex + count)
@@ -300,7 +301,10 @@ class HidingItemsHelper(
     internal fun move(fromIndex: Int, toIndex: Int) {
         checkIndex(fromIndex)
         checkIndex(toIndex)
-        if (fromIndex == toIndex || table.isEmpty()) {
+        if (fromIndex == toIndex) {
+            return
+        }
+        if (table.isEmpty()) {
             notifyData.set(fromIndex, toIndex)
             notifyMove(notifyData)
             return
@@ -351,7 +355,7 @@ class HidingItemsHelper(
             }
         }
         if (moveShown == 0) {
-            dst = obtainClosestBucket(dst, i, toIndex, 1)
+            dst = obtainBestBucket(dst, i, toIndex, 1)
             dst.insertEntries(toIndex, 1, false)
         } else {
             dst.insertEntries(toIndex, 1, true)
@@ -385,7 +389,7 @@ class HidingItemsHelper(
      * @param index Индекс элемента
      * @return Ближайшая возможная позиция элемента
      */
-    private fun closestPosition(index: Int): Int =
+    private fun nearestVisiblePosition(index: Int): Int =
         getBucket { it.index - index }?.run {
             val localIndex = index - this.index
             (getEntry(entries) { it.index - localIndex }?.let { entry ->
@@ -440,8 +444,8 @@ class HidingItemsHelper(
      */
     private fun notifyChange(fromIndex: Int, count: Int) {
         listener?.let {
-            val position = closestPosition(fromIndex)
-            val topPosition = closestPosition(position + count)
+            val position = nearestVisiblePosition(fromIndex)
+            val topPosition = nearestVisiblePosition(position + count)
             if (position < topPosition) {
                 it.onChanged(position, topPosition - position, null)
             }
@@ -889,7 +893,7 @@ class HidingItemsHelper(
      * @param count Количество вставляемых элементов
      * @return Лучший бакет для вставки
      */
-    private fun obtainClosestBucket(
+    private fun obtainBestBucket(
         curr: Bucket, bucketIndex: Int, index: Int, count: Int
     ): Bucket {
         if (curr.index == index && bucketIndex > 0) {
@@ -1006,8 +1010,8 @@ class HidingItemsHelper(
      * @param y Индекс 2 элемента
      */
     private fun setNotifyPositions(notify: NotifyData, x: Int, y: Int) {
-        notify.x = closestPosition(x)
-        notify.y = closestPosition(y)
+        notify.x = nearestVisiblePosition(x)
+        notify.y = nearestVisiblePosition(y)
     }
 
     /**
