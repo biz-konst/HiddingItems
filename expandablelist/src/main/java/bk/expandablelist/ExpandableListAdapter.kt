@@ -1,4 +1,4 @@
-package bk.hidingitems
+package bk.expandablelist
 
 import androidx.recyclerview.widget.*
 

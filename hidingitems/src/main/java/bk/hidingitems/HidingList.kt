@@ -50,6 +50,11 @@ open class HidingList<T> private constructor(private val hidingItems: HidingItem
 
     override val size: Int get() = hidingItems.targetPosition(currentList.size)
 
+    override fun clear() {
+        hidingItems.clear()
+        super.clear()
+    }
+
     // hiding items
 
     /**

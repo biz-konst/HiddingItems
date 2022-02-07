@@ -7,7 +7,7 @@ import androidx.viewbinding.ViewBinding
 import bk.app.hiddingitems.databinding.HolderLevel0Binding
 import bk.app.hiddingitems.databinding.HolderLevel1Binding
 import bk.app.hiddingitems.databinding.HolderLevel2Binding
-import bk.hidingitems.ExpandableListAdapter
+import bk.expandablelist.ExpandableListAdapter
 
 class MyExpandableListAdapter :
     ExpandableListAdapter<ExpandedListItem, MyExpandableListAdapter.ViewHolder>() {

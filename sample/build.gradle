@@ -46,6 +46,7 @@ dependencies {
     implementation 'com.google.android.material:material:1.4.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.2'
     implementation project(path: ':hidingitems')
+    implementation project(path: ':expandablelist')
     implementation 'androidx.navigation:navigation-fragment-ktx:2.3.5'
     implementation 'androidx.navigation:navigation-ui-ktx:2.3.5'
     //implementation files('D:/work/android/projects/HiddingItems/hidingitems/build/outputs/aar/hidingitems-debug.aar')

@@ -1,4 +1,4 @@
-package bk.hidingitems
+package bk.expandablelist
 
 import android.os.Parcel
 import android.os.Parcelable

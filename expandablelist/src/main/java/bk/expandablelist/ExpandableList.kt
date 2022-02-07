@@ -1,7 +1,8 @@
-package bk.hidingitems
+package bk.expandablelist
 
 import androidx.recyclerview.widget.AsyncDifferConfig
 import androidx.recyclerview.widget.ListUpdateCallback
+import bk.hidingitems.HidingList
 
 /**
  * @author Bizyur Konstantin <bkonst2180@gmail.com>
@@ -69,7 +70,7 @@ abstract class ExpandableList<T>(
         var firstShown = 0
         var lastShown = 0
 
-        fun expandChildren(index: Int, parentLevel: Int, parentExpanded: Boolean): Int {
+        fun expandChild(index: Int, parentLevel: Int, parentExpanded: Boolean): Int {
             var i = index
             if (!parentExpanded) {
                 // если родитель не раскрыт, пропускаем все его элементы
@@ -93,7 +94,7 @@ abstract class ExpandableList<T>(
                     }
                     val isExpanded = isExpanded(i)
                     lastShown = ++i
-                    i = expandChildren(i, level, isExpanded)
+                    i = expandChild(i, level, isExpanded)
                 }
             }
             return i
@@ -117,7 +118,7 @@ abstract class ExpandableList<T>(
             setExpanded(index, true)
             firstShown = index + 1
             lastShown = firstShown
-            expandChildren(index + 1, getExpansionLevel(index), true)
+            expandChild(index + 1, getExpansionLevel(index), true)
             if (firstShown < lastShown) {
                 show(firstShown, lastShown - firstShown)
             }

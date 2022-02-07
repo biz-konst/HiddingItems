@@ -1,15 +1,12 @@
 package bk.app.hiddingitems
 
 import android.os.Bundle
-import android.os.Parcel
-import android.view.ContextMenu
 import android.view.Menu
 import android.view.MenuItem
-import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import bk.app.hiddingitems.databinding.ActivityMainBinding
-import bk.hidingitems.ExpandableItems
-import bk.hidingitems.ExpandableListAdapterSavedState
+import bk.expandablelist.ExpandableItems
+import bk.expandablelist.ExpandableListAdapterSavedState
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,7 +25,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putParcelable(ADAPTER_SAVED_STATE_KEY, ExpandableListAdapterSavedState(adapter))
+        outState.putParcelable(ADAPTER_SAVED_STATE_KEY,
+            ExpandableListAdapterSavedState(adapter)
+        )
         super.onSaveInstanceState(outState)
     }
 

@@ -1,4 +1,4 @@
-package bk.hidingitems
+package bk.expandablelist
 
 /**
  * @author Bizyur Konstantin <bkonst2180@gmail.com>
